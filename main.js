@@ -441,5 +441,6 @@ ipcMain.handle('update:check', async () => {
 
 ipcMain.handle('update:install', () => {
   isQuitting = true;
-  autoUpdater.quitAndInstall();
+  // isSilent=true (no installer UI), isForceRunAfter=true (relaunch after).
+  autoUpdater.quitAndInstall(true, true);
 });
