@@ -1,6 +1,6 @@
 {
   "name": "vocalmanager",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Background vocal-training reminder app with real-time pitch feedback, tuned for low male voices.",
   "main": "main.js",
   "scripts": {
@@ -17,7 +17,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_GITHUB_USERNAME/vocalmanager.git"
+    "url": "https://github.com/ygterdem/vocalmanager.git"
   },
   "build": {
     "appId": "com.vocalmanager.app",
@@ -41,8 +41,9 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "YOUR_GITHUB_USERNAME",
-      "repo": "vocalmanager"
+      "owner": "ygterdem",
+      "repo": "vocalmanager",
+      "releaseType": "release"
     }
   },
   "devDependencies": {
