@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Vocal Manager — Settings</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">VM</div>
+        <div>
+          <div class="title">Settings</div>
+          <div class="subtitle">Reminders &amp; profile</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="backBtn">← Back</button>
+      </div>
+    </header>
+
+    <section class="exercise-card">
+      <div class="exercise-name">Reminder schedule</div>
+      <div class="exercise-sub">App nudges you to do a quick warm-up at these intervals.</div>
+      <div class="exercise-body">
+        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+          <label>
+            <div class="label">Sessions per day</div>
+            <input id="sessionsPerDay" type="number" min="1" max="8" />
+          </label>
+          <label>
+            <div class="label">Window start</div>
+            <input id="windowStart" type="time" />
+          </label>
+          <label>
+            <div class="label">Window end</div>
+            <input id="windowEnd" type="time" />
+          </label>
+        </div>
+        <label style="display:flex; gap:8px; align-items:center; margin-top:12px;">
+          <input id="autoStart" type="checkbox" />
+          <span>Launch on Windows startup (hidden in tray)</span>
+        </label>
+        <div class="hint" id="preview" style="margin-top:8px;"></div>
+        <div class="controls">
+          <button id="saveBtn" class="primary">Save</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="exercise-card">
+      <div class="exercise-name">Voice profile</div>
+      <div class="exercise-sub">Used to scale exercise targets to your range. Update from the main screen by "Mark as low/high".</div>
+      <div class="exercise-body">
+        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+          <label>
+            <div class="label">Lowest comfortable</div>
+            <input id="lowestComfortable" placeholder="E2" />
+          </label>
+          <label>
+            <div class="label">Highest comfortable</div>
+            <input id="highestComfortable" placeholder="E4" />
+          </label>
+          <label>
+            <div class="label">Target high (goal)</div>
+            <input id="targetHighest" placeholder="A4" />
+          </label>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <style>
+    input[type="time"], input[type="number"], input[type="text"], input:not([type]) {
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+      border-radius: 8px; padding: 8px 10px; font-size: 14px; width: 100%;
+    }
+  </style>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    async function load() {
+      const s = await window.vm.getSettings();
+      $('sessionsPerDay').value = s.sessionsPerDay;
+      $('windowStart').value = s.windowStart;
+      $('windowEnd').value = s.windowEnd;
+      $('autoStart').checked = !!s.autoStart;
+      $('lowestComfortable').value = s.voiceProfile.lowestComfortable || '';
+      $('highestComfortable').value = s.voiceProfile.highestComfortable || '';
+      $('targetHighest').value = s.voiceProfile.targetHighest || '';
+      preview();
+    }
+    async function preview() {
+      const times = await window.vm.schedulePreview();
+      $('preview').textContent = 'Next sessions today: ' +
+        times.map(t => new Date(t).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})).join(', ');
+    }
+    async function save() {
+      await window.vm.setSettings({
+        sessionsPerDay: Number($('sessionsPerDay').value),
+        windowStart: $('windowStart').value,
+        windowEnd: $('windowEnd').value,
+        autoStart: $('autoStart').checked,
+        voiceProfile: {
+          lowestComfortable: $('lowestComfortable').value.trim(),
+          highestComfortable: $('highestComfortable').value.trim(),
+          targetHighest: $('targetHighest').value.trim()
+        }
+      });
+      preview();
+      $('saveBtn').textContent = 'Saved ✓';
+      setTimeout(() => $('saveBtn').textContent = 'Save', 1200);
+    }
+    $('saveBtn').addEventListener('click', save);
+    $('backBtn').addEventListener('click', () => window.location.href = 'index.html');
+    ['sessionsPerDay','windowStart','windowEnd'].forEach(id =>
+      $(id).addEventListener('change', preview));
+    load();
+  </script>
+</body>
+</html>

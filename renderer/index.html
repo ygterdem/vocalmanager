@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Vocal Manager</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "pitchy": "./vendor/pitchy.bundle.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">VM</div>
+        <div>
+          <div class="title">Vocal Manager</div>
+          <div class="subtitle" id="sessionLabel">Ready when you are</div>
+        </div>
+      </div>
+      <div class="actions">
+        <div class="xp-pill" id="xpPill" title="Today's XP">
+          <span>XP</span>
+          <span id="xpValue">0</span>
+        </div>
+        <div class="xp-pill" id="streakPill" title="Day streak">
+          <span>🔥</span>
+          <span id="streakValue">0</span>
+        </div>
+        <button id="micBtn" class="primary">Enable microphone</button>
+        <button id="settingsBtn">Settings</button>
+      </div>
+    </header>
+
+    <nav class="tabs" id="tabBar">
+      <button class="tab" data-tab="practice">Practice</button>
+      <button class="tab" data-tab="songs">Sing-along ♪</button>
+      <button class="tab" data-tab="karaoke">Karaoke 🎤</button>
+      <button class="tab" data-tab="freestyle">Freestyle ∿</button>
+      <button class="tab" data-tab="ear">Ear training 👂</button>
+      <button class="tab" data-tab="breath">Breath 🫁</button>
+      <button class="tab" data-tab="intervals">Intervals 🎯</button>
+      <button class="tab" data-tab="progress">Progress 📊</button>
+    </nav>
+
+    <!-- IDLE STATE: shown when no session active -->
+    <section class="idle-card" id="idleCard">
+      <div class="idle-content">
+        <div class="idle-title">Ready to practice?</div>
+        <div class="idle-sub">
+          A guided routine for your voice type. Each step is a checked task —
+          the app listens to your mic and only advances when you actually hit the note.
+        </div>
+        <div class="routine-selector">
+          <span class="label">Routine</span>
+          <select id="routineSelect"></select>
+          <button id="editRoutinesBtn" class="ghost small">Edit routines</button>
+        </div>
+        <div class="routine-preview" id="routinePreview"></div>
+        <div class="idle-actions">
+          <button id="startBtn" class="primary big">Start warm-up routine</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- SONG PICKER -->
+    <section class="song-picker" id="songPicker" style="display:none;">
+      <div class="picker-head">
+        <div>
+          <div class="section-title">Sing-along practice</div>
+          <div class="section-sub">Pick a melody. Original practice phrases tuned for low-male/intimate-style singing. The app scrolls upcoming notes toward you; sing along and the dot shows your pitch vs target.</div>
+        </div>
+        <button id="songPickerBack">← Back</button>
+      </div>
+      <div class="song-list" id="songList"></div>
+    </section>
+
+    <!-- SONG PLAYER -->
+    <section class="song-player" id="songPlayer" style="display:none;">
+      <div class="song-head">
+        <div>
+          <div class="song-title" id="spTitle">—</div>
+          <div class="song-style" id="spStyle">—</div>
+        </div>
+        <div class="song-score-pill" id="spScore">Ready</div>
+      </div>
+      <canvas id="songCanvas" class="song-canvas"></canvas>
+      <div class="song-controls">
+        <button id="spStartBtn" class="primary">Start</button>
+        <button id="spReplayBtn" style="display:none;">Replay</button>
+        <button id="spQuitBtn" class="danger">Back</button>
+      </div>
+    </section>
+
+    <!-- KARAOKE PICKER -->
+    <section class="song-picker karaoke-mode" id="karaokePicker" style="display:none;">
+      <div class="picker-head">
+        <div>
+          <div class="section-title">Karaoke 🎤</div>
+          <div class="section-sub">
+            Original short pieces with lyrics and a chord-pad backing. Pick a track, sing the words as the notes scroll past, and the app scores your pitch.
+            Quiet rooms work best — the pad is intentionally low so it doesn't drown your voice.
+          </div>
+        </div>
+        <button id="karaokePickerBack">← Back</button>
+      </div>
+
+      <div class="import-card">
+        <div class="import-head">
+          <div>
+            <div class="import-title">Import your own song</div>
+            <div class="import-sub">
+              Drop a chart JSON (notes + lyrics + chords) and optionally an audio file to use as the backing track instead of the chord pad.
+              Schema documented at the top of <code>renderer/karaoke.js</code>. Imported songs stay loaded until you close the app.
+            </div>
+          </div>
+          <button id="importSchemaBtn" class="ghost small">Show schema</button>
+        </div>
+        <div class="import-inputs">
+          <label class="import-field">
+            <span>Chart (.json) <span class="req">*</span></span>
+            <input id="importChart" type="file" accept=".json,application/json" />
+          </label>
+          <label class="import-field">
+            <span>Audio backing (.mp3 / .wav / .ogg) — optional</span>
+            <input id="importAudio" type="file" accept="audio/*" />
+          </label>
+          <button id="importLoadBtn" class="primary">Load</button>
+        </div>
+        <div class="import-status" id="importStatus"></div>
+        <pre class="import-schema" id="importSchema" style="display:none;"></pre>
+      </div>
+
+      <div class="song-list" id="karaokeList"></div>
+    </section>
+
+    <!-- FREESTYLE -->
+    <section class="song-player freestyle-mode" id="freestylePanel" style="display:none;">
+      <div class="song-head">
+        <div>
+          <div class="song-title">Freestyle ∿</div>
+          <div class="song-style">
+            Sing along to anything — play your song in another app (YouTube, Spotify, etc.), and this trace shows your pitch in real time.
+            Recording is on automatically, so you can listen back when you're done.
+          </div>
+        </div>
+        <div class="song-score-pill" id="fsStatus">● rec</div>
+      </div>
+      <canvas id="freestyleCanvas" class="song-canvas"></canvas>
+      <div class="freestyle-readout">
+        <div><span class="label">Note</span><span class="big-num" id="fsCurrent">—</span></div>
+        <div><span class="label">Cents</span><span class="big-num" id="fsCents">—</span></div>
+        <div><span class="label">Loudness</span><span class="big-num" id="fsDb">— dB</span></div>
+      </div>
+      <div id="fsPlayback" class="summary-recording"></div>
+      <div class="song-controls">
+        <button id="fsRecBtn">Pause recording</button>
+        <button id="fsClearBtn">Clear trace</button>
+        <button id="fsBackBtn" class="danger">Back</button>
+      </div>
+    </section>
+
+    <!-- KARAOKE PLAYER -->
+    <section class="song-player karaoke-mode" id="karaokePlayer" style="display:none;">
+      <div class="song-head">
+        <div>
+          <div class="song-title" id="kpTitle">—</div>
+          <div class="song-style" id="kpStyle">—</div>
+        </div>
+        <div class="song-score-pill" id="kpScore">Ready</div>
+      </div>
+      <canvas id="karaokeCanvas" class="song-canvas"></canvas>
+      <div class="karaoke-lyrics" id="karaokeLyrics"></div>
+      <div class="song-controls">
+        <button id="kpStartBtn" class="primary">Start</button>
+        <button id="kpReplayBtn" style="display:none;">Replay</button>
+        <button id="kpQuitBtn" class="danger">Back</button>
+      </div>
+    </section>
+
+    <!-- PRACTICE DASHBOARD -->
+    <section class="dashboard" id="dashboardPanel" style="display:none;">
+      <div class="picker-head">
+        <div>
+          <div class="section-title">Your progress</div>
+          <div class="section-sub">Practice history, XP, and pitch stability over time.</div>
+        </div>
+        <button id="dashboardBack">← Back</button>
+      </div>
+      <div class="dash-stats">
+        <div class="dash-stat"><div class="label">Day streak</div><div class="big-num" id="dashStreak">0</div></div>
+        <div class="dash-stat"><div class="label">Total XP</div><div class="big-num" id="dashTotalXp">0</div></div>
+        <div class="dash-stat"><div class="label">Sessions logged</div><div class="big-num" id="dashSessions">0</div></div>
+        <div class="dash-stat"><div class="label">Best stability</div><div class="big-num" id="dashBestStab">—</div></div>
+      </div>
+      <div class="dash-block">
+        <div class="dash-block-title">Practice calendar <span class="dash-sub">— last 12 weeks, brighter = more XP</span></div>
+        <div class="heatmap" id="heatmap"></div>
+      </div>
+      <div class="dash-block">
+        <div class="dash-block-title">XP per session</div>
+        <canvas id="xpTrendCanvas" class="dash-canvas"></canvas>
+      </div>
+      <div class="dash-block">
+        <div class="dash-block-title">Pitch stability per session <span class="dash-sub">— lower cents = steadier</span></div>
+        <canvas id="stabTrendCanvas" class="dash-canvas"></canvas>
+      </div>
+    </section>
+
+    <!-- EAR TRAINING -->
+    <section class="ear-panel" id="earPanel" style="display:none;">
+      <div class="picker-head">
+        <div>
+          <div class="section-title">Ear training 👂</div>
+          <div class="section-sub">The app plays a note — no target shown. Sing it back and hold until it locks. Trains pitch from memory, not mimicry.</div>
+        </div>
+        <button id="earBack">← Back</button>
+      </div>
+      <div class="ear-range">
+        <div class="ear-range-row">
+          <div class="ear-range-label">Lowest note <strong id="earRangeLowLabel">C3</strong></div>
+          <input type="range" id="earRangeLow" min="36" max="84" value="48" />
+        </div>
+        <div class="ear-range-row">
+          <div class="ear-range-label">Highest note <strong id="earRangeHighLabel">G4</strong></div>
+          <input type="range" id="earRangeHigh" min="36" max="84" value="67" />
+        </div>
+        <div class="ear-range-hint" id="earRangeHint">Notes will be drawn at random from this range.</div>
+      </div>
+      <div class="ear-stage">
+        <div class="ear-round" id="earRound">Round 0 / 8</div>
+        <div class="ear-prompt" id="earPrompt">Press Start to begin</div>
+        <div class="ear-you" id="earYou">—</div>
+        <div class="ear-feedback" id="earFeedback"></div>
+        <div class="ear-progress-wrap">
+          <div class="progress-bar"><div class="progress-fill" id="earProgressFill"></div></div>
+        </div>
+      </div>
+      <div class="ear-controls">
+        <button id="earStartBtn" class="primary">Start</button>
+        <button id="earReplayBtn" style="display:none;">Replay note 🔊</button>
+        <button id="earSkipBtn" class="ghost" style="display:none;">Skip</button>
+      </div>
+      <div class="ear-summary" id="earSummary"></div>
+    </section>
+
+    <!-- BREATH / SUSTAIN TRAINER -->
+    <section class="breath-panel" id="breathPanel" style="display:none;">
+      <div class="picker-head">
+        <div>
+          <div class="section-title">Breath &amp; sustain 🫁</div>
+          <div class="section-sub">Sing one comfortable note and hold it as long and as steadily as you can. The clock runs while you stay on pitch; it stops when you run out of air or drift off.</div>
+        </div>
+        <button id="breathBack">← Back</button>
+      </div>
+      <div class="breath-stage">
+        <div class="breath-prompt" id="breathPrompt">Press Start, then sing a note and hold</div>
+        <div class="breath-timer" id="breathTimer">0.0s</div>
+        <div class="breath-note" id="breathNote">—</div>
+        <div class="breath-feedback" id="breathFeedback"></div>
+        <div class="breath-meters">
+          <div class="breath-meter">
+            <span class="label">Pitch steadiness</span>
+            <div class="breath-bar"><div class="breath-bar-fill" id="breathPitchBar"></div></div>
+          </div>
+          <div class="breath-meter">
+            <span class="label">Loudness evenness</span>
+            <div class="breath-bar"><div class="breath-bar-fill" id="breathDbBar"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="breath-controls">
+        <button id="breathStartBtn" class="primary">Start</button>
+        <button id="breathStopBtn" class="danger" style="display:none;">Stop</button>
+      </div>
+      <div class="breath-result" id="breathResult"></div>
+    </section>
+
+    <!-- INTERVAL TRAINING -->
+    <section class="intervals-panel" id="intervalsPanel" style="display:none;">
+      <div class="picker-head">
+        <div>
+          <div class="section-title">Interval training 🎯</div>
+          <div class="section-sub">Two notes play in sequence. Identify the interval between them. Builds relative pitch — the foundation of singing in tune without a reference.</div>
+        </div>
+        <button id="intervalsBack">← Back</button>
+      </div>
+      <div class="intervals-stage">
+        <div class="ear-round" id="intervalRound">Round 0 / 10</div>
+        <div class="interval-prompt" id="intervalPrompt">Press Start to begin</div>
+        <button id="intervalReplayBtn" class="primary" style="display:none;">▶ Replay the two notes</button>
+        <div class="interval-choices" id="intervalChoices"></div>
+        <div class="ear-feedback" id="intervalFeedback"></div>
+      </div>
+      <div class="intervals-controls">
+        <button id="intervalStartBtn" class="primary">Start</button>
+      </div>
+      <div class="ear-summary" id="intervalSummary"></div>
+    </section>
+
+    <!-- ROUTINE BUILDER -->
+    <section class="routine-builder" id="routineBuilderPanel" style="display:none;">
+      <div class="picker-head">
+        <div>
+          <div class="section-title">Routine builder</div>
+          <div class="section-sub">Build named routines by choosing which exercises to include and their order. Targets follow your voice type automatically.</div>
+        </div>
+        <button id="builderBack">← Back</button>
+      </div>
+      <div class="builder-body">
+        <div class="builder-saved">
+          <div class="dash-block-title">Saved routines</div>
+          <div class="builder-routine-list" id="builderRoutineList"></div>
+          <button id="builderNewBtn" class="primary small">+ New routine</button>
+        </div>
+        <div class="builder-editor" id="builderEditor" style="display:none;">
+          <label class="modal-field">
+            <div class="label">Routine name</div>
+            <input id="builderName" placeholder="e.g. Morning quick warm-up" />
+          </label>
+          <div class="dash-block-title">Exercises <span class="dash-sub">— check to include, drag-free reorder with ↑ ↓</span></div>
+          <div class="builder-exercise-list" id="builderExerciseList"></div>
+          <div class="builder-actions">
+            <button id="builderSaveBtn" class="primary">Save routine</button>
+            <button id="builderDeleteBtn" class="danger" style="display:none;">Delete</button>
+            <button id="builderCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SESSION STATE: shown during a session -->
+    <section class="session" id="sessionPanel" style="display:none;">
+      <div class="session-head">
+        <div>
+          <div class="ex-name" id="exName">—</div>
+          <div class="ex-tip" id="exTip">—</div>
+        </div>
+        <div class="ex-progress">
+          <div class="ex-step-text" id="exStepText">Exercise 1 / 6</div>
+          <div class="dots" id="exDots"></div>
+        </div>
+      </div>
+
+      <div class="challenge-card" id="challengeCard">
+        <div class="challenge-label" id="challengeLabel">—</div>
+        <div class="challenge-targets">
+          <div class="target-box">
+            <div class="target-box-label">TARGET</div>
+            <div class="target-box-note" id="targetNote">—</div>
+            <button id="playRefBtn" class="play-ref">▶ Play reference</button>
+          </div>
+          <div class="vs">→</div>
+          <div class="target-box you">
+            <div class="target-box-label">YOU</div>
+            <div class="target-box-note" id="youNote">—</div>
+            <div class="cents-line" id="centsLine">cents: —</div>
+          </div>
+        </div>
+        <canvas id="pitchTrace" class="pitch-trace"></canvas>
+        <div class="challenge-hint" id="challengeHint">—</div>
+        <div class="checkpoint-row" id="checkpointRow"></div>
+        <div class="progress-wrap">
+          <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+          <div class="progress-text" id="progressText">0%</div>
+        </div>
+        <div class="match-indicator" id="matchIndicator">listening…</div>
+        <div class="mic-debug" id="micDebug">mic: —</div>
+        <div class="challenge-controls">
+          <button id="pauseBtn" class="ghost" title="Pause / resume (P)">Pause</button>
+          <button id="skipBtn" class="ghost" title="Skip step (S)">Skip step</button>
+          <button id="restartBtn" class="ghost" title="Restart step (R)">Restart step</button>
+          <button id="quitBtn" class="danger" title="Quit session (Esc)">Quit session</button>
+        </div>
+        <div class="kbd-hint">
+          <kbd>Space</kbd> reference · <kbd>P</kbd> pause · <kbd>S</kbd> skip · <kbd>R</kbd> restart · <kbd>Esc</kbd> quit
+        </div>
+        <div class="pass-overlay" id="passOverlay">
+          <div class="pass-check">✓</div>
+          <div class="pass-text">Nice!</div>
+          <div class="pass-xp">+10 XP</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SESSION COMPLETE STATE -->
+    <section class="summary" id="summaryPanel" style="display:none;">
+      <div class="summary-title">Session complete</div>
+      <div class="summary-stars" id="summaryStars">★★★</div>
+      <div class="summary-row">
+        <div><div class="label">Challenges passed</div><div class="big-num" id="sumPassed">— / —</div></div>
+        <div><div class="label">XP earned</div><div class="big-num" id="sumXp">0</div></div>
+        <div><div class="label">Today's top</div><div class="big-num" id="sumTop">—</div></div>
+        <div><div class="label">Avg stability</div><div class="big-num" id="sumStability">—</div></div>
+      </div>
+      <div id="summaryAchievements" class="summary-achievements"></div>
+      <div id="summaryRecording" class="summary-recording"></div>
+      <button id="closeSummaryBtn" class="primary">Done</button>
+    </section>
+
+    <!-- SETTINGS MODAL -->
+    <div class="modal-backdrop" id="settingsModal" style="display:none;">
+      <div class="modal-panel">
+        <div class="modal-head">
+          <div class="modal-title">Settings</div>
+          <button class="modal-close" id="settingsCloseBtn" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-section">
+            <div class="modal-section-title">Reminder schedule</div>
+            <div class="modal-section-sub">App nudges you to do a quick warm-up at these intervals.</div>
+            <div class="modal-grid-3">
+              <label>
+                <div class="label">Sessions per day</div>
+                <input id="setSessionsPerDay" type="number" min="1" max="8" />
+              </label>
+              <label>
+                <div class="label">Window start</div>
+                <input id="setWindowStart" type="time" />
+              </label>
+              <label>
+                <div class="label">Window end</div>
+                <input id="setWindowEnd" type="time" />
+              </label>
+            </div>
+            <label class="modal-checkbox">
+              <input id="setAutoStart" type="checkbox" />
+              <span>Launch on Windows startup (hidden in tray)</span>
+            </label>
+            <div class="hint" id="setPreview"></div>
+          </div>
+
+          <div class="modal-section">
+            <div class="modal-section-title">Voice profile</div>
+            <div class="modal-section-sub">Used to scale exercise targets. Update from the main screen by "Mark as low/high".</div>
+            <div class="modal-grid-3">
+              <label>
+                <div class="label">Voice type</div>
+                <select id="setVoiceType">
+                  <option value="bass">Bass</option>
+                  <option value="baritone">Baritone</option>
+                  <option value="tenor">Tenor</option>
+                  <option value="alto">Alto</option>
+                  <option value="mezzo">Mezzo-soprano</option>
+                  <option value="soprano">Soprano</option>
+                </select>
+              </label>
+              <label>
+                <div class="label">Lowest comfortable</div>
+                <input id="setLowestComfortable" placeholder="E2" />
+              </label>
+              <label>
+                <div class="label">Highest comfortable</div>
+                <input id="setHighestComfortable" placeholder="E4" />
+              </label>
+            </div>
+            <label class="modal-field">
+              <div class="label">Target high (goal)</div>
+              <input id="setTargetHighest" placeholder="A4" />
+            </label>
+            <div class="hint" id="setVoiceHint"></div>
+          </div>
+
+          <div class="modal-section">
+            <div class="modal-section-title">Updates</div>
+            <div class="modal-section-sub">Version <span id="appVersion">—</span>. New versions download from GitHub automatically and install when you restart.</div>
+            <button id="checkUpdatesBtn" class="ghost small">Check for updates now</button>
+          </div>
+
+          <div class="modal-actions">
+            <button id="settingsSaveBtn" class="primary">Save</button>
+            <button id="settingsCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <section class="range-panel" id="rangePanel">
+      <div class="range-header">
+        <div class="section-title">Your vocal range</div>
+        <div class="section-sub">
+          <strong>Comfortable</strong> = a clean, controlled tone — no strain, no fry, no involuntary falsetto. Sustain ~2s, then click.
+        </div>
+      </div>
+      <div class="range-actions-row">
+        <div class="range-hint-inline">
+          Sustain <strong>"ah"</strong> (chest) for low, <strong>"ee"</strong> (light) for high — then click. Today's top updates live during a session.
+          <span class="range-readouts">
+            <span>L: <span id="rangeLow">—</span></span>
+            <span>H: <span id="rangeHigh">—</span></span>
+            <span>Today: <span id="rangeTodayLow">—</span>–<span id="rangeTodayHigh">—</span></span>
+          </span>
+        </div>
+        <div class="range-actions">
+          <button id="markLowBtn">Mark as low</button>
+          <button id="markHighBtn">Mark as high</button>
+        </div>
+      </div>
+      <div class="history" id="history"></div>
+      <div class="range-history-wrap">
+        <div class="range-history-head">
+          <div class="section-title" style="font-size: 14px;">Range history</div>
+          <div class="range-history-legend">
+            <span class="legend-dot low"></span> Low marks
+            <span class="legend-dot high"></span> High marks
+          </div>
+        </div>
+        <canvas id="rangeHistoryCanvas" class="range-history-canvas"></canvas>
+      </div>
+    </section>
+  </div>
+
+  <div id="toastStack" class="toast-stack" aria-live="polite"></div>
+
+  <script>
+    // Toast helper, also available before the module script loads so very
+    // early errors still surface. The module script will re-use the same
+    // container and replace this with the imported version once ready.
+    window.__vmToast = function (msg, kind) {
+      const stack = document.getElementById('toastStack');
+      if (!stack) return;
+      const t = document.createElement('div');
+      t.className = 'toast toast-' + (kind || 'info');
+      t.innerHTML = '<span class="toast-msg"></span><button class="toast-dismiss" aria-label="dismiss">×</button>';
+      t.querySelector('.toast-msg').textContent = msg;
+      t.querySelector('.toast-dismiss').addEventListener('click', () => t.remove());
+      stack.appendChild(t);
+      // Auto-dismiss errors after 8s, infos after 4s
+      const ttl = kind === 'error' ? 8000 : 4000;
+      setTimeout(() => { t.classList.add('fade-out'); setTimeout(() => t.remove(), 350); }, ttl);
+    };
+    window.addEventListener('error', (e) => {
+      console.error('[renderer error]', e.error || e.message, e);
+      window.__vmToast('JS error: ' + (e.message || 'unknown'), 'error');
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      console.error('[renderer rejection]', e.reason);
+      window.__vmToast('JS rejection: ' + ((e.reason && e.reason.message) || e.reason), 'error');
+    });
+  </script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
