@@ -8,7 +8,6 @@ via lip trills, ng-sirens, 5-tone scales, and octave slides.
 ## Setup
 
 ```powershell
-cd C:\Users\Cenk_\Desktop\vocalmanager
 npm install
 npm start
 ```
