@@ -39,6 +39,19 @@ export class PitchTracker {
     this.noiseFloorDb = NOISE_FLOOR_REF;
     this.calibrationSamples = [];
     this.calibratingUntil = 0;
+    // Live voice monitoring (Freestyle "hear my voice"): mic → gain → reverb
+    // mix → stereo panner → speakers. Off by default; chain built lazily.
+    this.monitor = { enabled: false, pan: 0, reverb: 0, level: 0.85 };
+    this.monitorGain = null;
+    // Reference (PC audio) pitch detection, running alongside the mic so the
+    // user can pitch-match a track playing on the PC. Off until startReference().
+    this.refAnalyser = null;
+    this.refDetector = null;
+    this.refStream = null;
+    this.refInput = null;
+    this.refBuf = null;
+    this.refMedianBuf = [];
+    this.refLocked = false;
   }
 
   async start() {
@@ -79,6 +92,8 @@ export class PitchTracker {
     this.stream = stream;
     this.input = this.ctx.createMediaStreamSource(stream);
     this.input.connect(this.analyser);
+    // Keep live monitoring wired to whatever source is current.
+    if (this.monitorGain) { try { this.input.connect(this.monitorGain); } catch (_) {} }
     this.recalibrate(); // new source → different floor
   }
 
@@ -164,11 +179,17 @@ export class PitchTracker {
     const hasSignal = normalizedDb > (NOISE_FLOOR_REF + 12);
     const timbre = hasSignal ? this._spectralFeatures(outFreq) : null;
 
+    // Reference (PC audio) pitch — independent analyser/detector with its own
+    // hysteresis + median so it doesn't interfere with the mic path.
+    const refFreq = this._refPitch();
+
     const note = outFreq ? freqToNote(outFreq) : null;
     this.onUpdate({
       freq: outFreq,
       clarity,
       note,
+      refFreq,
+      refNote: refFreq ? freqToNote(refFreq) : null,
       db: normalizedDb,
       rawDb,
       noiseFloor: this.noiseFloorDb,
@@ -240,13 +261,132 @@ export class PitchTracker {
     return { color, weight, breath, centroid };
   }
 
+  // ---- Reference (PC audio) pitch -----------------------------------------
+  // Capture system/desktop audio on a second analyser so its pitch can be
+  // tracked at the same time as the mic. Works best on monophonic material
+  // (a solo vocal or melody line); full mixes give a noisier reference.
+  async startReference() {
+    if (!this.ctx) throw new Error('Tracker not started');
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    stream.getVideoTracks().forEach((t) => t.stop()); // audio only
+    if (!stream.getAudioTracks().length) {
+      stream.getTracks().forEach((t) => t.stop());
+      throw new Error('No system-audio track was provided.');
+    }
+    this.refStream = stream;
+    this.refInput = this.ctx.createMediaStreamSource(stream);
+    this.refAnalyser = this.ctx.createAnalyser();
+    this.refAnalyser.fftSize = 2048;
+    this.refInput.connect(this.refAnalyser);
+    this.refDetector = PitchDetector.forFloat32Array(this.refAnalyser.fftSize);
+    this.refDetector.minVolumeDecibels = -55;
+    this.refBuf = new Float32Array(this.refDetector.inputLength);
+    this.refMedianBuf = [];
+    this.refLocked = false;
+  }
+
+  stopReference() {
+    if (this.refInput) { try { this.refInput.disconnect(); } catch (_) {} }
+    if (this.refStream) this.refStream.getTracks().forEach((t) => t.stop());
+    this.refStream = null;
+    this.refInput = null;
+    this.refAnalyser = null;
+    this.refDetector = null;
+    this.refBuf = null;
+    this.refMedianBuf = [];
+    this.refLocked = false;
+  }
+
+  hasReference() { return !!this.refAnalyser; }
+
+  _refPitch() {
+    if (!this.refAnalyser) return null;
+    this.refAnalyser.getFloatTimeDomainData(this.refBuf);
+    const [pitch, clarity] = this.refDetector.findPitch(this.refBuf, this.ctx.sampleRate);
+    const inRange = pitch > 55 && pitch < 1100;
+    if (this.refLocked) {
+      if (clarity < CLARITY_EXIT || !inRange) this.refLocked = false;
+    } else if (clarity > CLARITY_ENTER && inRange) {
+      this.refLocked = true;
+    }
+    if (!(this.refLocked && inRange)) { this.refMedianBuf.length = 0; return null; }
+    this.refMedianBuf.push(pitch);
+    if (this.refMedianBuf.length > MEDIAN_WINDOW) this.refMedianBuf.shift();
+    const sorted = this.refMedianBuf.slice().sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  }
+
+  // ---- Live voice monitoring ----------------------------------------------
+  // Route the mic input back to the output so the user can hear themselves,
+  // optionally panned to one ear with a touch of algorithmic reverb. Use
+  // headphones — monitoring through speakers with an open mic will feed back.
+
+  // Short decaying-noise impulse response → a simple, CPU-cheap reverb tail.
+  _makeReverbIR(seconds = 1.8, decay = 2.4) {
+    const rate = this.ctx.sampleRate;
+    const len = Math.max(1, Math.floor(rate * seconds));
+    const ir = this.ctx.createBuffer(2, len, rate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch);
+      for (let i = 0; i < len; i++) {
+        d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+      }
+    }
+    return ir;
+  }
+
+  _buildMonitorChain() {
+    if (this.monitorGain || !this.ctx) return;
+    const ctx = this.ctx;
+    this.monitorGain = ctx.createGain();
+    this.monitorGain.gain.value = 0;            // silent until enabled
+    this.monitorDry = ctx.createGain();         // unprocessed voice (always 1)
+    this.monitorWet = ctx.createGain();         // reverb send level
+    this.monitorWet.gain.value = 0;
+    this.monitorConv = ctx.createConvolver();
+    this.monitorConv.buffer = this._makeReverbIR();
+    this.monitorPan = ctx.createStereoPanner(); // -1 left … +1 right
+    this.monitorPan.pan.value = this.monitor.pan;
+
+    this.monitorGain.connect(this.monitorDry);
+    this.monitorGain.connect(this.monitorConv);
+    this.monitorConv.connect(this.monitorWet);
+    this.monitorDry.connect(this.monitorPan);
+    this.monitorWet.connect(this.monitorPan);
+    this.monitorPan.connect(ctx.destination);
+
+    if (this.input) { try { this.input.connect(this.monitorGain); } catch (_) {} }
+  }
+
+  _applyMonitor() {
+    if (!this.monitorGain) return;
+    const t = this.ctx.currentTime;
+    this.monitorGain.gain.setTargetAtTime(this.monitor.enabled ? this.monitor.level : 0, t, 0.02);
+    this.monitorWet.gain.setTargetAtTime(this.monitor.reverb, t, 0.03);
+    this.monitorPan.pan.setTargetAtTime(this.monitor.pan, t, 0.02);
+  }
+
+  setMonitorEnabled(on) {
+    this._buildMonitorChain();
+    this.monitor.enabled = !!on;
+    if (on && this.ctx && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+    this._applyMonitor();
+    return this.monitor.enabled;
+  }
+  setMonitorPan(pan)     { this.monitor.pan = Math.max(-1, Math.min(1, pan)); this._applyMonitor(); }
+  setMonitorReverb(amt)  { this.monitor.reverb = Math.max(0, Math.min(1, amt)); this._applyMonitor(); }
+  setMonitorLevel(level) { this.monitor.level = Math.max(0, Math.min(1, level)); this._applyMonitor(); }
+
   stop() {
     this.running = false;
+    this.stopReference();
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
     if (this.ctx) this.ctx.close();
     this.ctx = null;
     this.stream = null;
+    this.monitorGain = null; // nodes died with the context; rebuild on restart
+    this.monitor.enabled = false;
   }
 }
 

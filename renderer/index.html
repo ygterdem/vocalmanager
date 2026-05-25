@@ -157,6 +157,29 @@
         <div><span class="label">Loudness</span><span class="big-num" id="fsDb">— dB</span></div>
       </div>
       <div class="fs-source-label" id="fsSourceLabel">Source: microphone</div>
+      <div class="fs-match" id="fsMatch" style="display:none;">
+        <span class="fs-match-cell"><span class="fs-dot pc"></span>PC <strong id="fsRefNote">—</strong></span>
+        <span class="fs-match-arrow" id="fsMatchArrow">—</span>
+        <span class="fs-match-cell"><span class="fs-dot you"></span>You <strong id="fsMatchYou">—</strong></span>
+      </div>
+      <div class="fs-monitor" id="fsMonitor">
+        <label class="fs-mon-toggle">
+          <input type="checkbox" id="fsMonOn"> 🎧 Hear my voice
+        </label>
+        <div class="fs-mon-controls" id="fsMonControls">
+          <span class="fs-mon-label">Ear</span>
+          <select id="fsMonEar">
+            <option value="0">Both</option>
+            <option value="-1">Left</option>
+            <option value="1" selected>Right</option>
+          </select>
+          <span class="fs-mon-label">Reverb</span>
+          <input type="range" id="fsMonReverb" min="0" max="100" value="20">
+          <span class="fs-mon-label">Level</span>
+          <input type="range" id="fsMonLevel" min="0" max="100" value="80">
+        </div>
+        <div class="fs-mon-hint">Use headphones — monitoring through speakers will feed back.</div>
+      </div>
       <div class="timbre-block">
         <canvas id="fsCompass" class="fs-compass" title="Color (dark↔bright) × Weight (light↔heavy)"></canvas>
         <div class="timbre-side">
@@ -173,6 +196,7 @@
       <div id="fsPlayback" class="summary-recording"></div>
       <div class="song-controls">
         <button id="fsSourceBtn">🔊 Listen to PC audio</button>
+        <button id="fsMatchBtn">🎯 Match to PC audio</button>
         <button id="fsRecBtn">Pause recording</button>
         <button id="fsClearBtn">Clear trace</button>
         <button id="fsBackBtn" class="danger">Back</button>

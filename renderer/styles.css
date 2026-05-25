@@ -323,6 +323,35 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .fs-spectrum { width: 100%; height: 70px; display: block; margin-bottom: 12px;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; }
 .fs-source-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+
+/* FREESTYLE — PC-audio match bar (mic vs PC pitch) */
+.fs-match { display: flex; align-items: center; justify-content: center; gap: 16px;
+  padding: 10px 14px; margin-bottom: 12px; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 12px; font-size: 15px; }
+.fs-match-cell { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.fs-match-cell strong { color: var(--text); font-size: 18px; font-variant-numeric: tabular-nums; min-width: 34px; }
+.fs-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.fs-dot.pc { background: #fbbf24; }
+.fs-dot.you { background: #6ee7b7; }
+.fs-match-arrow { font-weight: 700; font-size: 15px; min-width: 92px; text-align: center;
+  padding: 4px 10px; border-radius: 8px; background: var(--panel); color: var(--muted); }
+.fs-match-arrow.ok { background: rgba(110,231,183,0.18); color: #6ee7b7; }
+.fs-match-arrow.off { background: rgba(251,191,36,0.15); color: #fbbf24; }
+
+/* FREESTYLE — live voice monitoring */
+.fs-monitor { padding: 12px 14px; margin-bottom: 12px; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 12px; }
+.fs-mon-toggle { display: inline-flex; align-items: center; gap: 8px; font-weight: 600;
+  font-size: 14px; cursor: pointer; }
+.fs-mon-toggle input { width: 16px; height: 16px; accent-color: #34d399; cursor: pointer; }
+.fs-mon-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
+  margin-top: 10px; transition: opacity 120ms ease; }
+.fs-mon-controls.disabled { opacity: 0.45; pointer-events: none; }
+.fs-mon-label { font-size: 12px; color: var(--muted); font-weight: 600; }
+.fs-mon-controls select { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 8px; font-size: 13px; }
+.fs-mon-controls input[type="range"] { flex: 1; min-width: 90px; max-width: 160px; accent-color: #60a5fa; }
+.fs-mon-hint { font-size: 11px; color: var(--muted); margin-top: 8px; }
 .timbre-block { display: flex; gap: 12px; margin-bottom: 12px; align-items: flex-start; }
 .fs-compass { width: 150px; height: 150px; display: block; flex-shrink: 0;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; }

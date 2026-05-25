@@ -384,12 +384,14 @@ class FreestyleTrace {
     this.canvas.height = this.H * dpr;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
-  push(midi, cents, db) {
-    this.history.push({ midi, cents: cents || 0, db });
+  push(midi, cents, db, refMidi = null, refCents = 0) {
+    this.history.push({ midi, cents: cents || 0, db, refMidi, refCents: refCents || 0 });
     if (this.history.length > this.maxHistory) this.history.shift();
-    // Slowly track detected range so the Y-scale isn't jumpy
-    if (midi != null) {
-      const m = midi + cents / 100;
+    // Slowly track detected range so the Y-scale isn't jumpy — fold in both
+    // your voice and the PC-audio reference so neither clips off-canvas.
+    for (const m of [midi != null ? midi + (cents || 0) / 100 : null,
+                     refMidi != null ? refMidi + (refCents || 0) / 100 : null]) {
+      if (m == null) continue;
       this.minM = Math.min(this.minM, m - 0.5);
       this.maxM = Math.max(this.maxM, m + 0.5);
     }
@@ -422,34 +424,38 @@ class FreestyleTrace {
       }
     }
 
-    // trace
-    let prevX = null, prevY = null;
-    for (let i = 0; i < this.history.length; i++) {
-      const h = this.history[i];
-      if (h.midi == null) { prevX = null; prevY = null; continue; }
-      const m = h.midi + h.cents / 100;
-      const x = (i / (this.maxHistory - 1)) * (W - 12) + 4;
-      const y = yM(m);
-      const alpha = 0.25 + 0.75 * (i / Math.max(1, this.history.length - 1));
-      const col = `rgba(110,231,183,${alpha})`;
-      if (prevX != null) {
-        ctx.strokeStyle = col; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(prevX, prevY); ctx.lineTo(x, y); ctx.stroke();
+    // Two traces: the PC-audio reference (amber) drawn behind your voice
+    // (green), so you can sing to overlay the green line onto the amber.
+    const drawTrace = (mKey, cKey, lineColor, dotColor) => {
+      let prevX = null, prevY = null;
+      for (let i = 0; i < this.history.length; i++) {
+        const h = this.history[i];
+        if (h[mKey] == null) { prevX = null; prevY = null; continue; }
+        const m = h[mKey] + (h[cKey] || 0) / 100;
+        const x = (i / (this.maxHistory - 1)) * (W - 12) + 4;
+        const y = yM(m);
+        const alpha = 0.25 + 0.75 * (i / Math.max(1, this.history.length - 1));
+        const col = lineColor(alpha);
+        if (prevX != null) {
+          ctx.strokeStyle = col; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(prevX, prevY); ctx.lineTo(x, y); ctx.stroke();
+        }
+        ctx.fillStyle = col;
+        ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fill();
+        prevX = x; prevY = y;
       }
-      ctx.fillStyle = col;
-      ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fill();
-      prevX = x; prevY = y;
-    }
-    // current dot
-    const last = this.history[this.history.length - 1];
-    if (last && last.midi != null) {
-      const m = last.midi + last.cents / 100;
-      const x = ((this.history.length - 1) / (this.maxHistory - 1)) * (W - 12) + 4;
-      const y = yM(m);
-      ctx.fillStyle = '#6ee7b7';
-      ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = 'white'; ctx.lineWidth = 2; ctx.stroke();
-    }
+      const last = this.history[this.history.length - 1];
+      if (last && last[mKey] != null) {
+        const m = last[mKey] + (last[cKey] || 0) / 100;
+        const x = ((this.history.length - 1) / (this.maxHistory - 1)) * (W - 12) + 4;
+        const y = yM(m);
+        ctx.fillStyle = dotColor;
+        ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'white'; ctx.lineWidth = 2; ctx.stroke();
+      }
+    };
+    drawTrace('refMidi', 'refCents', (a) => `rgba(251,191,36,${a})`, '#fbbf24'); // PC audio
+    drawTrace('midi', 'cents', (a) => `rgba(110,231,183,${a})`, '#6ee7b7');       // your voice
   }
 }
 
@@ -554,6 +560,8 @@ function teardownCurrent() {
     state.freestyleActive = false;
     state.freestyleRecording = false;
     stopFreestyleRecording();
+    tracker.setMonitorEnabled(false);
+    tracker.stopReference();
     if (state.freestyleTrace) { state.freestyleTrace.destroy(); state.freestyleTrace = null; }
   }
   restoreMicSource();
@@ -912,15 +920,94 @@ async function enterFreestyle() {
   el('fsPlayback').innerHTML = '';
   if (state.freestyleRecordingUrl) { URL.revokeObjectURL(state.freestyleRecordingUrl); state.freestyleRecordingUrl = null; }
   startFreestyleRecording();
+  loadFreestyleMonitorPrefs();
+  applyFreestyleMonitor();
+  resetFreestyleMatchUI();
 }
 
 function exitFreestyle() {
   state.freestyleActive = false;
   state.freestyleRecording = false;
   stopFreestyleRecording();
+  tracker.setMonitorEnabled(false);
+  tracker.stopReference();
   if (state.freestyleTrace) { state.freestyleTrace.destroy(); state.freestyleTrace = null; }
   restoreMicSource();
   showIdle();
+}
+
+// "Match to PC audio": track the PC's pitch alongside the mic so you can sing
+// to overlay your (green) line onto the PC's (amber) line.
+async function toggleFreestyleMatch() {
+  const btn = el('fsMatchBtn');
+  if (tracker.hasReference()) {
+    tracker.stopReference();
+    resetFreestyleMatchUI();
+    return;
+  }
+  try {
+    btn.textContent = 'Starting…'; btn.disabled = true;
+    // Keep the mic as the analyzed voice while PC audio becomes the reference.
+    if (tracker.sourceMode === 'system') {
+      await tracker.useMic();
+      el('fsSourceBtn').textContent = '🔊 Listen to PC audio';
+      el('fsSourceLabel').textContent = 'Source: microphone';
+    }
+    await tracker.startReference();
+    btn.disabled = false;
+    btn.textContent = '🎯 Stop matching';
+    el('fsMatch').style.display = '';
+    showToast('Matching PC audio — sing to line your green trace up with the amber one.', 'ok');
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = '🎯 Match to PC audio';
+    showToast('Could not capture PC audio: ' + (e.message || e), 'error');
+  }
+}
+
+function resetFreestyleMatchUI() {
+  const btn = el('fsMatchBtn');
+  if (btn) { btn.textContent = '🎯 Match to PC audio'; btn.disabled = false; }
+  const m = el('fsMatch');
+  if (m) m.style.display = 'none';
+}
+
+// Fold the mic-vs-PC pitch gap to the nearest octave so singing the same note
+// in your own register still reads as a match.
+function freestyleMatchFeedback(note, refNote) {
+  el('fsRefNote').textContent = refNote ? refNote.name : '—';
+  el('fsMatchYou').textContent = note ? note.name : '—';
+  const arrow = el('fsMatchArrow');
+  if (!note || !refNote) { arrow.textContent = '—'; arrow.className = 'fs-match-arrow'; return; }
+  let diff = (note.midi * 100 + note.cents) - (refNote.midi * 100 + refNote.cents);
+  diff = ((diff % 1200) + 1800) % 1200 - 600; // nearest-octave, -600..+600 cents
+  if (Math.abs(diff) <= 35) { arrow.textContent = '✓ matched'; arrow.className = 'fs-match-arrow ok'; }
+  else if (diff < 0) { arrow.textContent = '↑ go higher'; arrow.className = 'fs-match-arrow off'; }
+  else { arrow.textContent = '↓ go lower'; arrow.className = 'fs-match-arrow off'; }
+}
+
+// Live voice monitoring controls (the "Hear my voice" block). Reverb slider is
+// a 0–100 send that maps to a gentle wet level; ear select pans -1/0/+1.
+function applyFreestyleMonitor() {
+  const on = el('fsMonOn').checked;
+  tracker.setMonitorPan(Number(el('fsMonEar').value));
+  tracker.setMonitorReverb(Number(el('fsMonReverb').value) / 100 * 0.6);
+  tracker.setMonitorLevel(Number(el('fsMonLevel').value) / 100);
+  tracker.setMonitorEnabled(on);
+  el('fsMonControls').classList.toggle('disabled', !on);
+  localStorage.setItem('fsMonitor', JSON.stringify({
+    on, ear: el('fsMonEar').value, reverb: el('fsMonReverb').value, level: el('fsMonLevel').value
+  }));
+}
+
+function loadFreestyleMonitorPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem('fsMonitor') || '{}');
+    if (typeof p.on === 'boolean') el('fsMonOn').checked = p.on;
+    if (p.ear != null) el('fsMonEar').value = String(p.ear);
+    if (p.reverb != null) el('fsMonReverb').value = p.reverb;
+    if (p.level != null) el('fsMonLevel').value = p.level;
+  } catch (_) {}
 }
 
 // Other modes need the mic; if Freestyle left the tracker on system audio,
@@ -948,6 +1035,9 @@ async function toggleFreestyleSource() {
       btn.disabled = true;
       await tracker.useSystemAudio();
       clearCompass();
+      // Monitoring PC audio would just echo it back into your ears — turn it off.
+      el('fsMonOn').checked = false;
+      applyFreestyleMonitor();
       btn.disabled = false;
       btn.textContent = '🎤 Back to mic';
       if (lbl) lbl.textContent = 'Source: PC audio — play a song; note/pitch is N/A for music, watch Color/Weight/spectrum';
@@ -1382,7 +1472,7 @@ function midiToName(midi) {
   return freqToNote(440 * Math.pow(2, (midi - 69) / 12)).name;
 }
 
-function handlePitch({ freq, clarity, note, db, color, weight, breath }) {
+function handlePitch({ freq, clarity, note, db, color, weight, breath, refNote }) {
   // Always update the mic-debug line so the user can tell whether the mic
   // is picking up anything at all, even if pitchy filtered the frame out.
   const dbg = el('micDebug');
@@ -1402,12 +1492,18 @@ function handlePitch({ freq, clarity, note, db, color, weight, breath }) {
     handleBreathPitch(note, db);
     return;
   }
-  // Freestyle: visualize pitch + timbre meters + live spectrum, no targets
+  // Freestyle: visualize pitch + timbre meters + live spectrum, no targets.
+  // When "Match to PC audio" is on, also trace the PC pitch and show how close
+  // you are to it.
   if (state.freestyleActive) {
-    if (state.freestyleTrace) state.freestyleTrace.push(note ? note.midi : null, note ? note.cents : 0, db);
+    if (state.freestyleTrace) state.freestyleTrace.push(
+      note ? note.midi : null, note ? note.cents : 0, db,
+      refNote ? refNote.midi : null, refNote ? refNote.cents : 0
+    );
     el('fsCurrent').textContent = note ? note.name : '—';
     el('fsCents').textContent = note ? (note.cents >= 0 ? '+' : '') + note.cents : '—';
     el('fsDb').textContent = db != null ? `${Math.round(db)} dB` : '— dB';
+    if (tracker.hasReference()) freestyleMatchFeedback(note, refNote);
     updateTimbreMeters(color, weight, breath);
     drawSpectrum();
     return;
@@ -2168,6 +2264,9 @@ function drawLine(canvas, values, color, emptyMsg) {
 const EAR_TOTAL = 8;
 const EAR_TOLERANCE = 45;   // cents
 const EAR_HOLD_MS = 700;
+const EAR_NOTE_MS = 1400;       // reference tone duration ("listen note time")
+const EAR_LISTEN_PAD_MS = 350;  // extra deaf window after the tone, so it can't
+                                // leak from headphones into the mic and auto-pass
 
 async function enterEar() {
   if (!state.micEnabled) {
@@ -2255,6 +2354,7 @@ function nextEarRound() {
   state.earHoldMs = 0;
   state.earLastTick = null;
   state.earCentsSamples = [];
+  state.earListenUntil = performance.now() + EAR_NOTE_MS + EAR_LISTEN_PAD_MS;
   state.earPhase = 'await';
   el('earRound').textContent = `Round ${state.earRound} / ${EAR_TOTAL}`;
   el('earPrompt').textContent = 'Sing the note you hear';
@@ -2268,19 +2368,44 @@ function nextEarRound() {
 
 function playEarTarget() {
   const f = noteToFreq(midiToName(state.earTargetMidi));
-  if (f) tone.play(f, 1400);
+  if (f) tone.play(f, EAR_NOTE_MS);
+  // Don't score any singing until the reference tone has fully finished (plus a
+  // pad). Otherwise the tone bleeding from the headphones into the mic reads as
+  // a perfectly on-target note and fills the hold bar before the user sings.
+  state.earHoldMs = 0;
+  state.earLastTick = null;
+  state.earListenUntil = performance.now() + EAR_NOTE_MS + EAR_LISTEN_PAD_MS;
 }
 
 function handleEarPitch(note) {
   const yEl = el('earYou');
   if (!note) {
+    // Silence / no clear pitch: reset the hold bar. A momentary blip (e.g. the
+    // reference tone leaking through the headphones) shouldn't bank progress —
+    // only continuous singing should fill the bar.
     yEl.textContent = '—';
     yEl.classList.remove('on-target');
+    if (state.earPhase === 'await') {
+      state.earHoldMs = 0;
+      state.earLastTick = null;
+      el('earProgressFill').style.width = '0%';
+    }
     return;
   }
   yEl.textContent = note.name;
   if (state.earPhase !== 'await') return;
   const now = performance.now();
+  // Stay "deaf" while the reference note is still playing (and briefly after).
+  // This window is longer than the tone, so a round can only complete after the
+  // user actually sings — not from the tone leaking into the mic.
+  if (now < state.earListenUntil) {
+    state.earHoldMs = 0;
+    state.earLastTick = null;
+    el('earProgressFill').style.width = '0%';
+    el('earFeedback').textContent = 'Listen…';
+    el('earFeedback').className = 'ear-feedback';
+    return;
+  }
   const dt = state.earLastTick ? now - state.earLastTick : 0;
   state.earLastTick = now;
   const diff = (note.midi * 100 + note.cents) - state.earTargetMidi * 100;
@@ -2926,6 +3051,11 @@ el('fsBackBtn').addEventListener('click', exitFreestyle);
 el('fsRecBtn').addEventListener('click', toggleFreestyleRecording);
 el('fsClearBtn').addEventListener('click', clearFreestyleTrace);
 el('fsSourceBtn').addEventListener('click', toggleFreestyleSource);
+el('fsMatchBtn').addEventListener('click', toggleFreestyleMatch);
+el('fsMonOn').addEventListener('change', applyFreestyleMonitor);
+el('fsMonEar').addEventListener('change', applyFreestyleMonitor);
+el('fsMonReverb').addEventListener('input', applyFreestyleMonitor);
+el('fsMonLevel').addEventListener('input', applyFreestyleMonitor);
 
 // Dashboard
 el('dashboardBack').addEventListener('click', showIdle);
