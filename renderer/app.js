@@ -221,8 +221,8 @@ class PitchTrace {
 }
 
 class SongRunner {
-  constructor(song, canvas) {
-    this.song = expandSong(song);
+  constructor(song, canvas, transpose = 0) {
+    this.song = expandSong(song, transpose);
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.startTime = null;
@@ -372,10 +372,12 @@ class FreestyleTrace {
     this.history = [];
     this.maxHistory = 360;
     this.minM = 48; this.maxM = 72;
+    this.breakMidi = null; // optional horizontal marker (head-voice trainer)
     this._resize();
     this._ro = new ResizeObserver(() => { this._resize(); this.draw(); });
     this._ro.observe(canvas);
   }
+  setBreakLine(midi) { this.breakMidi = midi; this.draw(); }
   _resize() {
     const dpr = window.devicePixelRatio || 1;
     this.W = this.canvas.clientWidth || 800;
@@ -422,6 +424,19 @@ class FreestyleTrace {
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
         ctx.fillText(midiNameForChart(m), 6, y - 3);
       }
+    }
+
+    // Optional break marker (head-voice trainer): dashed line at the register
+    // transition, so chest sits below and head above it.
+    if (this.breakMidi != null && this.breakMidi >= minM - pad && this.breakMidi <= maxM + pad) {
+      const y = yM(this.breakMidi);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(167,139,250,0.85)'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#a78bfa'; ctx.font = '10px -apple-system, sans-serif'; ctx.textAlign = 'right';
+      ctx.fillText('break · ' + midiNameForChart(this.breakMidi), W - 6, y - 3);
+      ctx.restore();
     }
 
     // Two traces: the PC-audio reference (amber) drawn behind your voice
@@ -484,6 +499,9 @@ const state = {
   activeRoutineId: null,
   earActive: false,
   breathActive: false,
+  headVoiceActive: false,
+  hvTimer: null,
+  hvTrace: null,
   intervalTimers: [],
   builderDraft: null
 };
@@ -506,12 +524,13 @@ const VIEW_TO_TAB = {
   freestylePanel: 'freestyle',
   earPanel: 'ear',
   breathPanel: 'breath',
+  headVoicePanel: 'headvoice',
   intervalsPanel: 'intervals',
   dashboardPanel: 'progress'
 };
 
 function _showOnly(id) {
-  for (const x of ['idleCard', 'sessionPanel', 'summaryPanel', 'songPicker', 'songPlayer', 'karaokePicker', 'karaokePlayer', 'freestylePanel', 'dashboardPanel', 'earPanel', 'breathPanel', 'intervalsPanel', 'routineBuilderPanel']) {
+  for (const x of ['idleCard', 'sessionPanel', 'summaryPanel', 'songPicker', 'songPlayer', 'karaokePicker', 'karaokePlayer', 'freestylePanel', 'dashboardPanel', 'earPanel', 'breathPanel', 'headVoicePanel', 'intervalsPanel', 'routineBuilderPanel']) {
     const node = el(x);
     if (node) node.style.display = (x === id) ? '' : 'none';
   }
@@ -539,6 +558,7 @@ function navigateTo(tab) {
     case 'freestyle': enterFreestyle(); break;
     case 'ear':       enterEar(); break;
     case 'breath':    enterBreath(); break;
+    case 'headvoice': enterHeadVoice(); break;
     case 'intervals': enterIntervals(); break;
     case 'progress':  showDashboard(); break;
     default:          showIdle();
@@ -555,6 +575,7 @@ function teardownCurrent() {
   }
   state.earActive = false;
   state.breathActive = false;
+  if (state.headVoiceActive || state.hvTimer || state.hvTrace) stopHeadVoice();
   if (state.intervalTimers) { state.intervalTimers.forEach(clearTimeout); state.intervalTimers = []; }
   if (state.freestyleActive) {
     state.freestyleActive = false;
@@ -569,7 +590,63 @@ function teardownCurrent() {
   if (state.chordPad) { state.chordPad.stop(); state.chordPad = null; }
   if (state.karaokeAudio) { try { state.karaokeAudio.pause(); state.karaokeAudio.currentTime = 0; } catch (e) {} }
 }
-function showIdle()         { _showOnly('idleCard'); }
+function showIdle()         { _showOnly('idleCard'); renderDailyPlan(); }
+
+function dpTodayKey() {
+  const d = new Date();
+  return `dp-done-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Three short suggested activities for today. Head voice + ear are constant; the
+// third rotates by weekday so it doesn't feel repetitive.
+function dailyPlanItems() {
+  const rotating = [
+    { tab: 'songs', icon: '🎵', title: 'Sing a song in your range', sub: 'auto-fit to your voice' },
+    { tab: 'breath', icon: '🫁', title: 'Steady a long note', sub: 'build breath support' },
+    { tab: 'intervals', icon: '🎯', title: 'Hear the intervals', sub: 'name the distance' }
+  ];
+  return [
+    { tab: 'headvoice', icon: '🪶', title: 'Warm up & head voice', sub: 'sirens + clear tone' },
+    { tab: 'ear', icon: '👂', title: 'Train your ear', sub: '8 quick rounds' },
+    rotating[new Date().getDay() % rotating.length]
+  ];
+}
+
+async function renderDailyPlan() {
+  const wrap = el('dailyPlan');
+  if (!wrap) return;
+  const items = dailyPlanItems();
+  const key = dpTodayKey();
+  let done = [];
+  try { done = JSON.parse(localStorage.getItem(key) || '[]'); } catch (_) {}
+  let streak = 0;
+  try { const st = await window.vm.getStats(); streak = st.streak || 0; } catch (_) {}
+  const doneCount = items.filter((it) => done.includes(it.tab)).length;
+  const allDone = doneCount === items.length;
+  wrap.innerHTML = `
+    <div class="dp-head">
+      <span class="dp-title">Today's plan</span>
+      <span class="dp-streak">🔥 ${streak} day${streak === 1 ? '' : 's'} · ${doneCount}/${items.length}</span>
+    </div>
+    <div class="dp-sub">A few minutes each — gentle and consistent beats long and hard.</div>
+    <div class="dp-items">
+      ${items.map((it) => `
+        <button class="dp-item ${done.includes(it.tab) ? 'done' : ''}" data-tab="${it.tab}">
+          <span class="dp-check">${done.includes(it.tab) ? '✓' : ''}</span>
+          <span class="dp-item-text"><span class="dp-it-title">${it.icon} ${it.title}</span><br><span class="dp-it-sub">${it.sub}</span></span>
+          <span class="dp-arrow">→</span>
+        </button>`).join('')}
+    </div>
+    ${allDone ? '<div class="dp-done-all">✓ Plan complete — nice work. See you tomorrow! 🔥</div>' : ''}
+  `;
+  for (const btn of wrap.querySelectorAll('.dp-item')) {
+    btn.addEventListener('click', () => {
+      const tab = btn.dataset.tab;
+      if (!done.includes(tab)) { done.push(tab); localStorage.setItem(key, JSON.stringify(done)); }
+      navigateTo(tab);
+    });
+  }
+}
 function showSession()      { _showOnly('sessionPanel'); }
 function showSummary()      { _showOnly('summaryPanel'); }
 function showSongPicker()   { _showOnly('songPicker'); renderSongList(); }
@@ -580,6 +657,7 @@ function showFreestyle()    { _showOnly('freestylePanel'); }
 function showDashboard()    { _showOnly('dashboardPanel'); renderDashboard(); }
 function showEarPanel()     { _showOnly('earPanel'); }
 function showBreathPanel()  { _showOnly('breathPanel'); }
+function showHeadVoicePanel(){ _showOnly('headVoicePanel'); }
 function showIntervalsPanel(){ _showOnly('intervalsPanel'); }
 function showRoutineBuilder(){ _showOnly('routineBuilderPanel'); renderBuilderRoutineList(); }
 
@@ -657,10 +735,52 @@ async function openSong(songId) {
   el('spReplayBtn').style.display = 'none';
   showSongPlayer();
 
-  // Lazily create the runner so the canvas is sized first
+  // Lazily create the runner so the canvas is sized first. Auto-fit the key to
+  // the user's comfortable range (snapped to whole octaves) so a low voice can
+  // actually sing it.
+  state.currentSong = song;
+  state.songTranspose = autoFitTranspose(song);
   if (state.songRunner) state.songRunner.destroy();
-  state.songRunner = new SongRunner(song, el('songCanvas'));
+  if (state.songWatcher) { clearInterval(state.songWatcher); state.songWatcher = null; }
+  state.songRunner = new SongRunner(song, el('songCanvas'), state.songTranspose);
   state.songRunner.draw();
+  renderSongKey();
+}
+
+// Octave shift that best centres a song in the user's comfortable range.
+function autoFitTranspose(song) {
+  if (state.profileLowMidi == null || state.profileHighMidi == null) return 0;
+  const midis = song.notes.map((n) => noteToMidi(n.note));
+  const songCenter = (Math.min(...midis) + Math.max(...midis)) / 2;
+  const userCenter = (state.profileLowMidi + state.profileHighMidi) / 2;
+  return Math.round((userCenter - songCenter) / 12) * 12; // whole octaves keep it natural
+}
+
+function renderSongKey() {
+  const t = state.songTranspose || 0;
+  const a = Math.abs(t);
+  let label = t === 0 ? 'original'
+    : a % 12 === 0 ? `${t > 0 ? '+' : '−'}${a / 12} octave${a / 12 === 1 ? '' : 's'}`
+    : `${t > 0 ? '+' : '−'}${a} semitone${a === 1 ? '' : 's'}`;
+  if (state.currentSong) {
+    const midis = state.currentSong.notes.map((n) => noteToMidi(n.note) + t);
+    label += `  ·  ${midiToName(Math.min(...midis))}–${midiToName(Math.max(...midis))}`;
+  }
+  el('spKeyReadout').textContent = label;
+}
+
+// Re-key the song and reset to "ready" (changing key mid-take just restarts).
+function applySongTranspose(t) {
+  state.songTranspose = Math.max(-36, Math.min(36, t));
+  if (!state.currentSong) return;
+  if (state.songWatcher) { clearInterval(state.songWatcher); state.songWatcher = null; }
+  if (state.songRunner) state.songRunner.destroy();
+  state.songRunner = new SongRunner(state.currentSong, el('songCanvas'), state.songTranspose);
+  state.songRunner.draw();
+  renderSongKey();
+  el('spStartBtn').style.display = '';
+  el('spReplayBtn').style.display = 'none';
+  el('spScore').textContent = 'Ready — press Start';
 }
 
 function startSong() {
@@ -669,10 +789,11 @@ function startSong() {
   el('spScore').textContent = 'Listening…';
   state.songRunner.begin();
   // Drive a status check loop — the canvas auto-redraws via its own RAF
-  const watcher = setInterval(() => {
-    if (!state.songRunner) { clearInterval(watcher); return; }
+  if (state.songWatcher) clearInterval(state.songWatcher);
+  state.songWatcher = setInterval(() => {
+    if (!state.songRunner) { clearInterval(state.songWatcher); state.songWatcher = null; return; }
     if (state.songRunner.status === 'done') {
-      clearInterval(watcher);
+      clearInterval(state.songWatcher); state.songWatcher = null;
       finishSong();
     }
   }, 200);
@@ -689,6 +810,7 @@ function finishSong() {
 }
 
 function quitSong() {
+  if (state.songWatcher) { clearInterval(state.songWatcher); state.songWatcher = null; }
   if (state.songRunner) { state.songRunner.destroy(); state.songRunner = null; }
   showIdle();
 }
@@ -1524,7 +1646,7 @@ function midiToName(midi) {
   return freqToNote(440 * Math.pow(2, (midi - 69) / 12)).name;
 }
 
-function handlePitch({ freq, clarity, note, db, color, weight, breath, refNote, refColor, refWeight }) {
+function handlePitch({ freq, clarity, note, db, color, weight, breath, centroid, refNote, refColor, refWeight }) {
   // Always update the mic-debug line so the user can tell whether the mic
   // is picking up anything at all, even if pitchy filtered the frame out.
   const dbg = el('micDebug');
@@ -1544,6 +1666,11 @@ function handlePitch({ freq, clarity, note, db, color, weight, breath, refNote, 
     handleBreathPitch(note, db);
     return;
   }
+  // Head voice / register trainer
+  if (state.headVoiceActive) {
+    handleHeadVoicePitch(note, db, breath, weight);
+    return;
+  }
   // Freestyle: visualize pitch + timbre meters + live spectrum, no targets.
   // When "Match to PC audio" is on, also trace the PC pitch and show how close
   // you are to it.
@@ -1559,7 +1686,12 @@ function handlePitch({ freq, clarity, note, db, color, weight, breath, refNote, 
     // Plot the PC's timbre as a second compass dot (set before the mic update,
     // which triggers the single redraw).
     setPcTimbre(tracker.hasReference() ? refColor : null, tracker.hasReference() ? refWeight : null);
-    updateTimbreMeters(color, weight, breath);
+    // Brightness (compass X) auto-calibrated to your own voice so the dot uses
+    // the full range — your neutral sits mid, brightening crosses right. Falls
+    // back to the absolute color if no centroid this frame.
+    const youColor = centroid != null ? calibrateBrightness(centroid) : color;
+    updateTimbreMeters(youColor, weight, breath);
+    updateVoiceAnalysis(note, weight, breath, centroid); // after updateTimbreMeters so smC is current
     drawSpectrum();
     return;
   }
@@ -1642,11 +1774,126 @@ let densGrid = null;
 let smC = null, smW = null;        // smoothed live position (your mic)
 let homeC = null, homeW = null;    // slow "home" (characteristic) position
 let pcC = null, pcW = null;        // smoothed PC-audio position (match mode)
+let briMin = null, briMax = null;  // observed spectral-centroid range (Hz) for brightness auto-cal
+let briPeak = null;                // brightest centroid reached this session (Hz)
 
 function clearCompass() {
   densGrid = new Float32Array(DENS_N * DENS_N);
   smC = smW = homeC = homeW = pcC = pcW = null;
+  briMin = briMax = briPeak = null;
+  resetVoiceAnalysis();
   drawCompass();
+}
+
+// Map your spectral centroid (Hz) to 0..1 brightness relative to YOUR own
+// observed range, so the compass dot uses the full width regardless of voice
+// type. Your neutral lands near the middle; brightening crosses right. The
+// fixed 400–4200 Hz absolute scale pins low voices to the left edge, which is
+// why a bass "can't pass the middle" — this removes that ceiling.
+function calibrateBrightness(hz) {
+  if (hz == null) return null;
+  if (briMin == null) {
+    // Seed a window around the first reading so the dot starts mid, not pinned.
+    briMin = hz - 350; briMax = hz + 350;
+  } else {
+    briMin = Math.min(briMin, hz);
+    briMax = Math.max(briMax, hz);
+    // Relax the bounds inward very slowly so stale extremes fade over ~a minute
+    // and the scale tracks your current voice (without snapping the dot back).
+    const mid = (briMin + briMax) / 2;
+    briMin += (mid - briMin) * 0.0008;
+    briMax += (mid - briMax) * 0.0008;
+  }
+  if (briPeak == null || hz > briPeak) briPeak = hz; // session-best brightness
+  const span = Math.max(500, briMax - briMin); // floor avoids hyper-sensitivity
+  return Math.max(0, Math.min(1, (hz - briMin) / span));
+}
+
+// ---------- VOICE ANALYSIS (Freestyle) ----------
+// Standard voice-type ranges (MIDI). Voice type is really tessitura + timbre;
+// from observed range alone this is a ballpark, labelled "(est.)".
+const VOICE_TYPES = [
+  { name: 'Bass',          lo: 40, hi: 64 }, // E2–E4
+  { name: 'Bass-baritone', lo: 43, hi: 67 }, // G2–G4
+  { name: 'Baritone',      lo: 45, hi: 69 }, // A2–A4
+  { name: 'Tenor',         lo: 48, hi: 72 }, // C3–C5
+  { name: 'Countertenor',  lo: 53, hi: 77 }, // F3–F5
+  { name: 'Mezzo-soprano', lo: 57, hi: 81 }, // A3–A5
+  { name: 'Soprano',       lo: 60, hi: 84 }  // C4–C6
+];
+// Estimate from range + tessitura (where the voice sits). Tessitura is weighted
+// heavily — it's the real basis for voice type — so a stray low/high note
+// doesn't flip the result.
+function estimateVoiceType(minMidi, maxMidi, center) {
+  const c = center != null ? center : (minMidi + maxMidi) / 2;
+  let best = null, bestScore = -Infinity;
+  for (const v of VOICE_TYPES) {
+    const overlap = Math.min(maxMidi, v.hi) - Math.max(minMidi, v.lo);
+    const centerDist = Math.abs(c - (v.lo + v.hi) / 2);
+    const score = overlap - centerDist * 0.8;
+    if (score > bestScore) { bestScore = score; best = v; }
+  }
+  return best && best.name;
+}
+
+// Count time spent on each semitone instead of latching all-time min/max, so a
+// single glitchy frame (rumble, mic bump, octave-halving at the detector floor)
+// can't define your range. A note only counts once held for MIN_FRAMES.
+const MIN_FRAMES = 6; // ~150ms at the 40Hz tick
+let vlHist = null;    // Int32Array(128): frames spent on each MIDI note
+let vlW = null, vlB = null; // slow-smoothed weight / breath for steady descriptors
+
+function resetVoiceAnalysis() {
+  vlHist = new Int32Array(128);
+  vlW = vlB = null;
+}
+
+function updateVoiceAnalysis(note, weight, breath, centroid) {
+  if (!vlHist) vlHist = new Int32Array(128);
+  if (note && note.midi != null && note.midi >= 0 && note.midi < 128) vlHist[note.midi]++;
+  if (weight != null) vlW = vlW == null ? weight : vlW + (weight - vlW) * 0.05;
+  if (breath != null) vlB = vlB == null ? breath : vlB + (breath - vlB) * 0.05;
+
+  // Robust range = lowest/highest note held long enough; tessitura = the note
+  // below which half your sung time falls (the median).
+  let rMin = null, rMax = null, total = 0;
+  for (let m = 0; m < 128; m++) {
+    const cnt = vlHist[m];
+    if (cnt >= MIN_FRAMES) { if (rMin == null) rMin = m; rMax = m; }
+    total += cnt;
+  }
+  let tess = null;
+  if (total > 0) {
+    let acc = 0;
+    for (let m = 0; m < 128; m++) { acc += vlHist[m]; if (acc >= total / 2) { tess = m; break; } }
+  }
+  // Union with the saved comfortable range (a reliable, deliberate measurement).
+  let lo = rMin, hi = rMax;
+  if (state.profileLowMidi != null) lo = lo == null ? state.profileLowMidi : Math.min(lo, state.profileLowMidi);
+  if (state.profileHighMidi != null) hi = hi == null ? state.profileHighMidi : Math.max(hi, state.profileHighMidi);
+
+  const colorWord = smC == null ? null : smC < 0.35 ? 'Warm' : smC <= 0.65 ? 'Balanced' : 'Bright';
+  const weightWord = vlW == null ? null : vlW < 0.4 ? 'Light' : vlW <= 0.6 ? 'Balanced' : 'Full';
+  const textureWord = vlB == null ? null : vlB < 0.4 ? 'Clear' : vlB <= 0.6 ? 'Some air' : 'Breathy';
+  const haveRange = lo != null && hi != null;
+  const wideEnough = haveRange && hi - lo >= 5;
+  const type = wideEnough ? estimateVoiceType(lo, hi, tess) : null;
+
+  el('fsAnType').textContent = type ? type + ' (est.)' : haveRange ? 'sing wider to estimate' : '—';
+  el('fsAnRange').textContent = haveRange
+    ? `${midiToName(lo)}–${midiToName(hi)}${wideEnough ? ' · ' + ((hi - lo) / 12).toFixed(1) + ' oct' : ''}`
+    : '—';
+  el('fsAnTess').textContent = tess != null ? midiToName(tess) : '—';
+  el('fsAnColor').textContent = colorWord ? `${colorWord} · ${Math.round(smC * 100)}% vs your neutral` : '—';
+  el('fsAnWeight').textContent = weightWord || '—';
+  el('fsAnTexture').textContent = textureWord || '—';
+  el('fsAnBright').textContent = (centroid != null ? Math.round(centroid / 10) * 10 + ' Hz' : '—')
+    + (briPeak != null ? ` · peak ${Math.round(briPeak)} Hz` : '');
+
+  if (type && colorWord && weightWord && textureWord) {
+    el('fsAnSummary').textContent =
+      `${weightWord}, ${colorWord.toLowerCase()} ${type.toLowerCase()} — ${textureWord.toLowerCase()} tone.`;
+  }
 }
 
 // Smoothed PC-audio timbre target; null hides the PC dot. Doesn't redraw —
@@ -2215,9 +2462,53 @@ async function renderDashboard() {
   el('dashSessions').textContent = sessions.length;
   const stabs = sessions.map((s) => s.avgStability).filter((v) => v != null);
   el('dashBestStab').textContent = stabs.length ? `${Math.round(Math.min(...stabs))}¢` : '—';
+  renderBaselineVsNow(sessions);
   renderHeatmap(sessions);
   drawBars(el('xpTrendCanvas'), sessions.slice(-30).map((s) => s.xp || 0), '#6ee7b7', 'No sessions yet');
   drawLine(el('stabTrendCanvas'), sessions.slice(-30).map((s) => s.avgStability), '#60a5fa', 'Practice hold/dynamics challenges to track stability');
+}
+
+// "Then vs now": aggregate the first week of practice against the last 7 days
+// for the metrics that actually move — highest note, best steadiness, volume.
+function renderBaselineVsNow(sessions) {
+  const wrap = el('baseline');
+  if (!wrap) return;
+  const DAY = 86400000;
+  const now = Date.now();
+  const withAt = (sessions || []).filter((s) => s.at);
+  if (withAt.length < 2) {
+    wrap.innerHTML = '<div class="bl-empty">Your then-vs-now comparison appears once you\'ve logged a few sessions across about a week.</div>';
+    return;
+  }
+  const firstAt = Math.min(...withAt.map((s) => s.at));
+  if (now - firstAt < 5 * DAY) {
+    wrap.innerHTML = '<div class="bl-empty">Comes alive once you have about a week of history — you\'re on your way. 💪</div>';
+    return;
+  }
+  const thenB = withAt.filter((s) => s.at <= firstAt + 7 * DAY);
+  const nowB = withAt.filter((s) => s.at >= now - 7 * DAY);
+  const maxMidi = (arr) => { const v = arr.map((s) => s.topMidi).filter((x) => x != null); return v.length ? Math.max(...v) : null; };
+  const bestStab = (arr) => { const v = arr.map((s) => s.avgStability).filter((x) => x != null); return v.length ? Math.min(...v) : null; };
+
+  const cell = (m, t, n, d, cls) =>
+    `<div class="bl-metric">${m}</div><div class="bl-val">${t}</div><div class="bl-val">${n}</div><div class="bl-delta ${cls}">${d}</div>`;
+
+  const tHi = maxMidi(thenB), nHi = maxMidi(nowB);
+  let hiD = '—', hiCls = 'flat';
+  if (tHi != null && nHi != null) { const d = nHi - tHi; hiD = d > 0 ? `+${d} st` : d < 0 ? `${d} st` : '='; hiCls = d > 0 ? 'up' : d < 0 ? 'down' : 'flat'; }
+
+  const tSt = bestStab(thenB), nSt = bestStab(nowB);
+  let stD = '—', stCls = 'flat';
+  if (tSt != null && nSt != null) { const d = Math.round(nSt - tSt); stD = d < 0 ? `${d}¢` : d > 0 ? `+${d}¢` : '='; stCls = d < 0 ? 'up' : d > 0 ? 'down' : 'flat'; } // lower cents = steadier = better
+
+  const cD = nowB.length - thenB.length;
+  const cCls = cD > 0 ? 'up' : cD < 0 ? 'down' : 'flat';
+
+  wrap.innerHTML =
+    `<div class="bl-head">Metric</div><div class="bl-head bl-val">Then</div><div class="bl-head bl-val">Now</div><div class="bl-head bl-delta">Δ</div>` +
+    cell('Highest note', tHi != null ? midiToName(tHi) : '—', nHi != null ? midiToName(nHi) : '—', hiD, hiCls) +
+    cell('Best steadiness', tSt != null ? `${Math.round(tSt)}¢` : '—', nSt != null ? `${Math.round(nSt)}¢` : '—', stD, stCls) +
+    cell('Sessions / week', String(thenB.length), String(nowB.length), cD > 0 ? `+${cD}` : cD < 0 ? `${cD}` : '=', cCls);
 }
 
 function renderHeatmap(sessions) {
@@ -2704,6 +2995,229 @@ function finishBreath() {
   `;
 }
 
+// ---------- HEAD VOICE / REGISTER TRAINER ----------
+// Guided practice to develop head voice and smooth the chest↔head break. These
+// are process drills (sirens, trills, light onsets), not pitch-target scoring —
+// the value is live biofeedback (trace + tone) plus a tracked top note.
+const HV_XP = 12;
+const HV_MIN_FRAMES = 5; // a note must be held ~125ms before it counts as "reached"
+const HV_STEPS = [
+  { kind: 'glide', secs: 30, title: 'Find your break',
+    text: 'On an "oooo", slide slowly from a low comfortable note UP as high as you can, then back down. Notice where the voice flips from strong (chest) to light (head) — that jump in the trace is your break. Just explore it.' },
+  { kind: 'glide', secs: 30, title: 'Sirens',
+    text: 'Glide smoothly UP THROUGH the break and back down on "ng" (end of "sing"). Keep it quiet and aim for one smooth line in the trace — no sudden step. Repeat gently.' },
+  { kind: 'glide', secs: 30, title: 'Lip trills / straw',
+    text: 'Lip-bubble (or hum through a thin straw) while sliding high and back. This connects the registers without strain — let the buzz carry you up higher than feels easy on a plain vowel.' },
+  { kind: 'tone',  secs: 30, title: 'Clear head voice',
+    text: 'Up high in head voice, sing light "gee gee gee". Aim for a CLEAR tone, not airy — watch the Tone readout and try to keep it on "Clear". Stay gentle; clarity comes from clean onset, not force.' },
+  { kind: 'glide', secs: 30, title: 'Connect the gears',
+    text: 'Pick a note near your break and alternate chest → head → chest on it. Each time, try to make the flip a little smaller and smoother.' }
+];
+
+let hvHist = null, hvTopMidi = null, hvToneSamples = null, hvStepIdx = 0;
+let hvRegister = null;       // 'chest' | 'head' (from timbre weight, with hysteresis)
+let hvBreakSamples = [];     // pitches where chest→head flipped while ascending
+let hvBreakMidi = null;      // current break estimate (median of flips)
+
+async function enterHeadVoice() {
+  if (!state.micEnabled) {
+    const ok = await enableMic();
+    if (!ok) return;
+  }
+  showHeadVoicePanel();
+  stopHeadVoice();
+  el('hvStep').textContent = `${HV_STEPS.length} short exercises`;
+  el('hvTitle').textContent = 'Press Start';
+  el('hvInstruction').textContent = 'Five short exercises to build your head voice. Headphones recommended. Keep it gentle — stop if you feel any throat tension.';
+  el('hvNote').textContent = '—';
+  el('hvTop').textContent = '—';
+  el('hvToneWrap').style.visibility = 'hidden';
+  el('hvTimer').textContent = '';
+  el('hvFeedback').textContent = '';
+  el('hvFeedback').className = 'hv-feedback';
+  el('hvStartBtn').style.display = '';
+  el('hvStartBtn').textContent = 'Start';
+  el('hvNextBtn').style.display = 'none';
+  el('hvStopBtn').style.display = 'none';
+  el('hvGuideBtn').style.display = 'none';
+  const best = parseInt(localStorage.getItem('hvBestMidi'), 10);
+  const brk = parseInt(localStorage.getItem('hvBreakMidi'), 10);
+  const bits = [];
+  if (Number.isFinite(best)) bits.push(`Your highest note so far: <strong>${midiToName(best)}</strong>`);
+  if (Number.isFinite(brk)) bits.push(`break around <strong>${midiToName(brk)}</strong>`);
+  el('hvSummary').innerHTML = bits.length ? `<div class="hv-detail">${bits.join(' · ')}</div>` : '';
+}
+
+function startHeadVoice() {
+  state.headVoiceActive = true;
+  hvStepIdx = 0;
+  hvHist = new Int32Array(128);
+  hvTopMidi = null;
+  hvToneSamples = [];
+  hvRegister = null;
+  hvBreakSamples = [];
+  const storedBreak = parseInt(localStorage.getItem('hvBreakMidi'), 10);
+  hvBreakMidi = Number.isFinite(storedBreak) ? storedBreak : null;
+  state.hvTrace = new FreestyleTrace(el('hvTrace'));
+  if (hvBreakMidi != null) state.hvTrace.setBreakLine(hvBreakMidi);
+  el('hvStartBtn').style.display = 'none';
+  el('hvGuideBtn').style.display = '';
+  el('hvStopBtn').style.display = '';
+  el('hvSummary').innerHTML = '';
+  el('hvTop').textContent = '—';
+  runHvStep(0);
+}
+
+function runHvStep(idx) {
+  const step = HV_STEPS[idx];
+  if (!step) return finishHeadVoice();
+  hvStepIdx = idx;
+  el('hvStep').textContent = `Exercise ${idx + 1} / ${HV_STEPS.length}`;
+  el('hvTitle').textContent = step.title;
+  el('hvInstruction').textContent = step.text;
+  el('hvFeedback').textContent = '';
+  el('hvFeedback').className = 'hv-feedback';
+  el('hvToneWrap').style.visibility = step.kind === 'tone' ? 'visible' : 'hidden';
+  el('hvNextBtn').style.display = '';
+  el('hvNextBtn').textContent = idx === HV_STEPS.length - 1 ? 'Finish →' : 'Next exercise →';
+  if (state.hvTrace) state.hvTrace.clear();
+
+  // Per-step countdown that auto-advances; Next skips early.
+  if (state.hvTimer) clearInterval(state.hvTimer);
+  let left = step.secs;
+  el('hvTimer').textContent = `${left}s left · or press Next when ready`;
+  state.hvTimer = setInterval(() => {
+    left -= 1;
+    if (left <= 0) { hvNextStep(); return; }
+    el('hvTimer').textContent = `${left}s left · or press Next when ready`;
+  }, 1000);
+}
+
+function handleHeadVoicePitch(note, db, breath, weight) {
+  if (!state.headVoiceActive) return;
+  el('hvNote').textContent = note ? note.name : '—';
+  if (state.hvTrace) state.hvTrace.push(note ? note.midi : null, note ? note.cents : 0, db);
+
+  if (note && note.midi != null && note.midi >= 0 && note.midi < 128) {
+    hvHist[note.midi]++;
+    // Highest note held long enough this session (glitch-safe).
+    if (hvHist[note.midi] >= HV_MIN_FRAMES && (hvTopMidi == null || note.midi > hvTopMidi)) {
+      hvTopMidi = note.midi;
+      el('hvTop').textContent = midiToName(hvTopMidi);
+    }
+  }
+
+  // Register tracking from timbre weight (low weight = light = head), with
+  // hysteresis so it doesn't flicker. A chest→head flip while ascending marks
+  // the break.
+  hvDetectRegister(note, weight);
+
+  const step = HV_STEPS[hvStepIdx];
+  if (step && step.kind === 'tone') {
+    // Clarity step: live tone read from breathiness.
+    if (breath != null && note) {
+      hvToneSamples.push(breath);
+      const word = breath < 0.4 ? 'Clear' : breath <= 0.6 ? 'Some air' : 'Airy';
+      el('hvTone').textContent = word;
+      el('hvFeedback').textContent = breath < 0.4 ? '✓ Clear tone — that\'s it' : 'Lighten the breath — aim for a clean, clear "gee"';
+      el('hvFeedback').className = 'hv-feedback ' + (breath < 0.4 ? 'ok' : 'off');
+    } else if (!note) {
+      el('hvTone').textContent = '—';
+    }
+  } else if (step) {
+    // Glide steps: show which register you're in (+ break once known).
+    const reg = hvRegister === 'head' ? '🪶 Head voice' : hvRegister === 'chest' ? '🎚️ Chest voice' : '';
+    el('hvFeedback').textContent = reg + (hvBreakMidi != null && reg ? `  ·  break ~${midiToName(hvBreakMidi)}` : '');
+    el('hvFeedback').className = 'hv-feedback ' + (hvRegister === 'head' ? 'ok' : '');
+  }
+}
+
+// Track chest/head from timbre weight; record the pitch at each chest→head flip
+// as a break estimate (median of recent flips), and mark it on the trace.
+function hvDetectRegister(note, weight) {
+  if (weight == null || !note) return;
+  const prev = hvRegister;
+  if (hvRegister === 'head') { if (weight > 0.6) hvRegister = 'chest'; }
+  else if (hvRegister === 'chest') { if (weight < 0.4) hvRegister = 'head'; }
+  else { hvRegister = weight < 0.5 ? 'head' : 'chest'; }
+  if (prev === 'chest' && hvRegister === 'head' && note.midi != null) {
+    hvBreakSamples.push(note.midi);
+    if (hvBreakSamples.length > 9) hvBreakSamples.shift();
+    const s = hvBreakSamples.slice().sort((a, b) => a - b);
+    hvBreakMidi = s[Math.floor(s.length / 2)];
+    if (state.hvTrace) state.hvTrace.setBreakLine(hvBreakMidi);
+  }
+}
+
+function hvNextStep() {
+  if (state.hvTimer) { clearInterval(state.hvTimer); state.hvTimer = null; }
+  if (hvStepIdx + 1 >= HV_STEPS.length) finishHeadVoice();
+  else runHvStep(hvStepIdx + 1);
+}
+
+// Play a low→high reference pair to slide between: anchored on your break if we
+// know it, else your comfortable top, else a default chest→head span.
+function playHvGuide() {
+  let lo, hi;
+  if (hvBreakMidi != null) { lo = hvBreakMidi - 5; hi = hvBreakMidi + 7; }
+  else if (state.profileHighMidi != null) { lo = state.profileHighMidi - 9; hi = state.profileHighMidi; }
+  else { lo = 48; hi = 60; }
+  const f1 = noteToFreq(midiToName(lo));
+  const f2 = noteToFreq(midiToName(hi));
+  if (f1) tone.play(f1, 700);
+  if (f2) setTimeout(() => tone.play(f2, 1100), 800);
+  el('hvFeedback').textContent = `Guide: slide from ${midiToName(lo)} up to ${midiToName(hi)} and back`;
+  el('hvFeedback').className = 'hv-feedback';
+}
+
+// Stop timers/trace and clear the active flag. Safe to call repeatedly.
+function stopHeadVoice() {
+  state.headVoiceActive = false;
+  if (state.hvTimer) { clearInterval(state.hvTimer); state.hvTimer = null; }
+  if (state.hvTrace) { state.hvTrace.destroy(); state.hvTrace = null; }
+}
+
+function exitHeadVoice() {
+  stopHeadVoice();
+  showIdle();
+}
+
+function finishHeadVoice() {
+  const top = hvTopMidi;
+  const toneAvg = hvToneSamples && hvToneSamples.length
+    ? hvToneSamples.reduce((a, b) => a + b, 0) / hvToneSamples.length : null;
+  stopHeadVoice();
+  el('hvStep').textContent = 'Session complete';
+  el('hvTitle').textContent = 'Nice work 🪶';
+  el('hvInstruction').textContent = 'Head voice grows with gentle, regular practice — a few minutes most days beats one long push. Come back tomorrow.';
+  el('hvTimer').textContent = '';
+  el('hvFeedback').textContent = '';
+  el('hvNote').textContent = '—';
+  el('hvToneWrap').style.visibility = 'hidden';
+  el('hvStartBtn').style.display = '';
+  el('hvStartBtn').textContent = 'Train again';
+  el('hvGuideBtn').style.display = 'none';
+  el('hvNextBtn').style.display = 'none';
+  el('hvStopBtn').style.display = 'none';
+
+  const prevBest = parseInt(localStorage.getItem('hvBestMidi'), 10);
+  const isBest = top != null && (!Number.isFinite(prevBest) || top > prevBest);
+  if (isBest) localStorage.setItem('hvBestMidi', String(top));
+  if (hvBreakMidi != null) localStorage.setItem('hvBreakMidi', String(hvBreakMidi));
+  const toneLbl = toneAvg == null ? null : toneAvg < 0.4 ? 'clear' : toneAvg <= 0.6 ? 'a little airy' : 'breathy';
+  el('hvSummary').innerHTML = `
+    <div class="hv-headline">${top != null ? 'Highest note: ' + midiToName(top) : 'Keep at it'}</div>
+    <div class="hv-detail">
+      ${isBest && top != null ? '🎉 New highest note!' : Number.isFinite(prevBest) ? 'Your best: ' + midiToName(prevBest) : ''}
+      ${hvBreakMidi != null ? ' · break around ' + midiToName(hvBreakMidi) : ''}
+      ${toneLbl ? ' · head-voice tone was ' + toneLbl : ''}
+    </div>`;
+
+  window.vm.recordSession({ passed: HV_STEPS.length, total: HV_STEPS.length, xp: HV_XP, topMidi: top, avgStability: null })
+    .then((r) => { refreshHeaderStats(); showAchievementUnlocks((r && r._newAchievements) || []); })
+    .catch(() => {});
+}
+
 // ---------- INTERVAL TRAINING ----------
 const INTERVAL_TOTAL = 10;
 const INTERVAL_SET = [
@@ -3113,11 +3627,16 @@ for (const tab of document.querySelectorAll('.tab')) {
 el('songPickerBack').addEventListener('click', showIdle);
 el('spStartBtn').addEventListener('click', startSong);
 el('spReplayBtn').addEventListener('click', () => {
-  if (!state.songRunner) return;
-  const songId = state.songRunner.song.id;
-  openSong(songId);
+  if (!state.currentSong) return;
+  applySongTranspose(state.songTranspose || 0); // rebuild at the same key, ready state
+  startSong();
 });
 el('spQuitBtn').addEventListener('click', quitSong);
+el('spKeyDownOct').addEventListener('click', () => applySongTranspose((state.songTranspose || 0) - 12));
+el('spKeyDown').addEventListener('click', () => applySongTranspose((state.songTranspose || 0) - 1));
+el('spKeyUp').addEventListener('click', () => applySongTranspose((state.songTranspose || 0) + 1));
+el('spKeyUpOct').addEventListener('click', () => applySongTranspose((state.songTranspose || 0) + 12));
+el('spKeyAuto').addEventListener('click', () => applySongTranspose(autoFitTranspose(state.currentSong)));
 el('karaokePickerBack').addEventListener('click', showIdle);
 el('kpStartBtn').addEventListener('click', startKaraoke);
 el('kpReplayBtn').addEventListener('click', () => {
@@ -3170,6 +3689,11 @@ el('earRangeHigh').addEventListener('input', updateEarRangeLabels);
 // Breath trainer
 el('breathBack').addEventListener('click', exitBreath);
 el('breathStartBtn').addEventListener('click', startBreath);
+el('hvBack').addEventListener('click', exitHeadVoice);
+el('hvStartBtn').addEventListener('click', startHeadVoice);
+el('hvGuideBtn').addEventListener('click', playHvGuide);
+el('hvNextBtn').addEventListener('click', hvNextStep);
+el('hvStopBtn').addEventListener('click', finishHeadVoice);
 el('breathStopBtn').addEventListener('click', finishBreath);
 
 // Interval training

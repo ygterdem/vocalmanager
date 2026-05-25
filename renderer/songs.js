@@ -9,6 +9,9 @@
 // at the song's bpm. A beat of 2 means a half-note duration.
 
 import { noteToMidi } from './challenges.js';
+import { freqToNote } from './exercises.js';
+
+const midiToName = (m) => freqToNote(440 * Math.pow(2, (m - 69) / 12)).name;
 
 export const SONG_LIBRARY = [
   {
@@ -57,14 +60,18 @@ export const SONG_LIBRARY = [
   }
 ];
 
-export function expandSong(song) {
+export function expandSong(song, transpose = 0) {
   const beatMs = 60000 / song.bpm;
-  const notes = song.notes.map(n => ({
-    ...n,
-    midi: noteToMidi(n.note),
-    startMs: n.beat * beatMs,
-    endMs: (n.beat + n.beats) * beatMs
-  }));
+  const notes = song.notes.map(n => {
+    const midi = noteToMidi(n.note) + transpose;
+    return {
+      ...n,
+      midi,
+      note: transpose ? midiToName(midi) : n.note, // relabel the chart when shifted
+      startMs: n.beat * beatMs,
+      endMs: (n.beat + n.beats) * beatMs
+    };
+  });
   const totalMs = Math.max(...notes.map(n => n.endMs)) + 1500;
-  return { ...song, notes, totalMs };
+  return { ...song, notes, totalMs, transpose };
 }

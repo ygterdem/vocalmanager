@@ -44,12 +44,14 @@
       <button class="tab" data-tab="freestyle">Freestyle ∿</button>
       <button class="tab" data-tab="ear">Ear training 👂</button>
       <button class="tab" data-tab="breath">Breath 🫁</button>
+      <button class="tab" data-tab="headvoice">Head voice 🪶</button>
       <button class="tab" data-tab="intervals">Intervals 🎯</button>
       <button class="tab" data-tab="progress">Progress 📊</button>
     </nav>
 
     <!-- IDLE STATE: shown when no session active -->
     <section class="idle-card" id="idleCard">
+      <div class="daily-plan" id="dailyPlan"></div>
       <div class="idle-content">
         <div class="idle-title">Ready to practice?</div>
         <div class="idle-sub">
@@ -90,6 +92,15 @@
         <div class="song-score-pill" id="spScore">Ready</div>
       </div>
       <canvas id="songCanvas" class="song-canvas"></canvas>
+      <div class="song-key" id="songKey">
+        <span class="sk-label">Key</span>
+        <button id="spKeyDownOct" title="Down an octave">−8va</button>
+        <button id="spKeyDown" title="Down a semitone">−</button>
+        <span class="sk-readout" id="spKeyReadout">original</span>
+        <button id="spKeyUp" title="Up a semitone">+</button>
+        <button id="spKeyUpOct" title="Up an octave">+8va</button>
+        <button id="spKeyAuto" title="Fit to your range">Fit to me</button>
+      </div>
       <div class="song-controls">
         <button id="spStartBtn" class="primary">Start</button>
         <button id="spReplayBtn" style="display:none;">Replay</button>
@@ -190,6 +201,19 @@
           </div>
         </div>
         <div class="timbre-side">
+          <div class="fs-analysis" id="fsAnalysis">
+            <div class="fs-an-title">Voice analysis</div>
+            <div class="fs-an-summary" id="fsAnSummary">Sing a few low and high notes to analyze your voice…</div>
+            <div class="fs-an-grid">
+              <span class="fs-an-k">Type</span><span class="fs-an-v" id="fsAnType">—</span>
+              <span class="fs-an-k">Range</span><span class="fs-an-v" id="fsAnRange">—</span>
+              <span class="fs-an-k">Sits around</span><span class="fs-an-v" id="fsAnTess">—</span>
+              <span class="fs-an-k">Color</span><span class="fs-an-v" id="fsAnColor">—</span>
+              <span class="fs-an-k">Weight</span><span class="fs-an-v" id="fsAnWeight">—</span>
+              <span class="fs-an-k">Texture</span><span class="fs-an-v" id="fsAnTexture">—</span>
+              <span class="fs-an-k">Bright</span><span class="fs-an-v" id="fsAnBright">—</span>
+            </div>
+          </div>
           <div class="timbre-meters">
             <div class="timbre-row">
               <span class="tm-label">Breath</span><span class="tm-end">clear</span>
@@ -247,6 +271,10 @@
         <div class="dash-stat"><div class="label">Total XP</div><div class="big-num" id="dashTotalXp">0</div></div>
         <div class="dash-stat"><div class="label">Sessions logged</div><div class="big-num" id="dashSessions">0</div></div>
         <div class="dash-stat"><div class="label">Best stability</div><div class="big-num" id="dashBestStab">—</div></div>
+      </div>
+      <div class="dash-block" id="baselineBlock">
+        <div class="dash-block-title">Then vs now <span class="dash-sub">— your first week of practice vs the last 7 days</span></div>
+        <div class="baseline" id="baseline"></div>
       </div>
       <div class="dash-block">
         <div class="dash-block-title">Practice calendar <span class="dash-sub">— last 13 weeks, greener = more XP that day</span></div>
@@ -329,6 +357,37 @@
         <button id="breathStopBtn" class="danger" style="display:none;">Stop</button>
       </div>
       <div class="breath-result" id="breathResult"></div>
+    </section>
+
+    <!-- HEAD VOICE / REGISTER TRAINER -->
+    <section class="hv-panel" id="headVoicePanel" style="display:none;">
+      <div class="picker-head">
+        <div>
+          <div class="section-title">Head voice 🪶</div>
+          <div class="section-sub">A guided set to build your head voice and smooth the break between chest and head. Keep everything gentle — rough is fine while it's new, but never strain or push for volume.</div>
+        </div>
+        <button id="hvBack">← Back</button>
+      </div>
+      <div class="hv-stage">
+        <div class="hv-stepline"><span id="hvStep">—</span></div>
+        <div class="hv-title" id="hvTitle">Press Start</div>
+        <div class="hv-instruction" id="hvInstruction">Five short exercises. Headphones recommended. Take breaks if you feel any tension.</div>
+        <canvas id="hvTrace" class="song-canvas"></canvas>
+        <div class="hv-readout">
+          <div><span class="label">Note</span><span class="big-num" id="hvNote">—</span></div>
+          <div><span class="label">Highest today</span><span class="big-num" id="hvTop">—</span></div>
+          <div id="hvToneWrap" style="visibility:hidden;"><span class="label">Tone</span><span class="big-num" id="hvTone">—</span></div>
+        </div>
+        <div class="hv-timer" id="hvTimer"></div>
+        <div class="hv-feedback" id="hvFeedback"></div>
+      </div>
+      <div class="hv-controls">
+        <button id="hvStartBtn" class="primary">Start</button>
+        <button id="hvGuideBtn" style="display:none;">🔊 Guide tone</button>
+        <button id="hvNextBtn" style="display:none;">Next exercise →</button>
+        <button id="hvStopBtn" class="danger" style="display:none;">End session</button>
+      </div>
+      <div class="hv-summary" id="hvSummary"></div>
     </section>
 
     <!-- INTERVAL TRAINING -->
