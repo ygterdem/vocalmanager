@@ -556,6 +556,7 @@ function teardownCurrent() {
     stopFreestyleRecording();
     if (state.freestyleTrace) { state.freestyleTrace.destroy(); state.freestyleTrace = null; }
   }
+  restoreMicSource();
   if (state.songRunner) { state.songRunner.destroy(); state.songRunner = null; }
   if (state.chordPad) { state.chordPad.stop(); state.chordPad = null; }
   if (state.karaokeAudio) { try { state.karaokeAudio.pause(); state.karaokeAudio.currentTime = 0; } catch (e) {} }
@@ -903,6 +904,8 @@ async function enterFreestyle() {
   }
   state.freestyleActive = true;
   state.freestyleRecording = true;
+  clearCompass();
+  updateTimbreMeters(null, null, null);
   el('fsRecBtn').textContent = 'Pause recording';
   el('fsStatus').textContent = '● rec';
   el('fsStatus').style.color = '#f87171';
@@ -916,7 +919,45 @@ function exitFreestyle() {
   state.freestyleRecording = false;
   stopFreestyleRecording();
   if (state.freestyleTrace) { state.freestyleTrace.destroy(); state.freestyleTrace = null; }
+  restoreMicSource();
   showIdle();
+}
+
+// Other modes need the mic; if Freestyle left the tracker on system audio,
+// switch it back.
+function restoreMicSource() {
+  if (tracker.sourceMode === 'system') {
+    tracker.useMic().catch((e) => console.warn('[source] back to mic failed', e));
+    const btn = el('fsSourceBtn');
+    if (btn) { btn.textContent = '🔊 Listen to PC audio'; btn.disabled = false; }
+    const lbl = el('fsSourceLabel');
+    if (lbl) lbl.textContent = 'Source: microphone';
+  }
+}
+
+async function toggleFreestyleSource() {
+  const btn = el('fsSourceBtn');
+  const lbl = el('fsSourceLabel');
+  try {
+    if (tracker.sourceMode === 'system') {
+      await tracker.useMic();
+      btn.textContent = '🔊 Listen to PC audio';
+      if (lbl) lbl.textContent = 'Source: microphone';
+    } else {
+      btn.textContent = 'Switching…';
+      btn.disabled = true;
+      await tracker.useSystemAudio();
+      clearCompass();
+      btn.disabled = false;
+      btn.textContent = '🎤 Back to mic';
+      if (lbl) lbl.textContent = 'Source: PC audio — play a song; note/pitch is N/A for music, watch Color/Weight/spectrum';
+      showToast('Now analyzing your PC audio.', 'ok');
+    }
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = '🔊 Listen to PC audio';
+    showToast('Could not capture PC audio: ' + (e.message || e), 'error');
+  }
 }
 
 function startFreestyleRecording() {
@@ -1074,6 +1115,8 @@ function loadChallenge() {
   el('progressText').textContent = '0%';
   el('matchIndicator').textContent = 'Get ready…';
   el('matchIndicator').className = 'match-indicator';
+  el('weightCoach').textContent = '';
+  el('weightCoach').className = 'weight-coach';
   el('passOverlay').classList.remove('show');
   renderCheckpointRow(ch);
   if (pitchTrace) pitchTrace.clear();
@@ -1339,7 +1382,7 @@ function midiToName(midi) {
   return freqToNote(440 * Math.pow(2, (midi - 69) / 12)).name;
 }
 
-function handlePitch({ freq, clarity, note, db }) {
+function handlePitch({ freq, clarity, note, db, color, weight, breath }) {
   // Always update the mic-debug line so the user can tell whether the mic
   // is picking up anything at all, even if pitchy filtered the frame out.
   const dbg = el('micDebug');
@@ -1359,12 +1402,14 @@ function handlePitch({ freq, clarity, note, db }) {
     handleBreathPitch(note, db);
     return;
   }
-  // Freestyle: just visualize pitch + push readouts, no targets
+  // Freestyle: visualize pitch + timbre meters + live spectrum, no targets
   if (state.freestyleActive) {
     if (state.freestyleTrace) state.freestyleTrace.push(note ? note.midi : null, note ? note.cents : 0, db);
     el('fsCurrent').textContent = note ? note.name : '—';
     el('fsCents').textContent = note ? (note.cents >= 0 ? '+' : '') + note.cents : '—';
     el('fsDb').textContent = db != null ? `${Math.round(db)} dB` : '— dB';
+    updateTimbreMeters(color, weight, breath);
+    drawSpectrum();
     return;
   }
   // Sing-along + karaoke delegate to the song runner
@@ -1379,6 +1424,7 @@ function handlePitch({ freq, clarity, note, db }) {
       state.runner.tick(null, 0, db);
       if (pitchTrace) pitchTrace.push(null, 0, state.runner.currentTargetMidi(), state.runner.ch.toleranceCents, db, currentDbRange());
       tickUI();
+      updateWeightCoach(null);
     }
     return;
   }
@@ -1407,7 +1453,230 @@ function handlePitch({ freq, clarity, note, db }) {
     if (state.runner.justReset) flashReset();
     if (pitchTrace) pitchTrace.push(note.midi, note.cents, state.runner.currentTargetMidi(), state.runner.ch.toleranceCents, db, currentDbRange());
     tickUI(note);
+    updateWeightCoach(weight);
     if (state.runner.status === 'passed') onPass();
+  }
+}
+
+// Advisory timbre cue shown during exercises tagged with coachWeight.
+// Advisory only — it never blocks the pass, because spectral weight is
+// uncalibrated and shouldn't make a pitch exercise unpassable.
+function updateWeightCoach(weight) {
+  const elc = el('weightCoach');
+  if (!elc) return;
+  const ch = state.runner && state.runner.ch;
+  if (!ch || !ch.coachWeight) { elc.textContent = ''; elc.className = 'weight-coach'; return; }
+  const wantLight = ch.coachWeight === 'light';
+  if (weight == null) {
+    elc.textContent = wantLight ? 'Aim for a light, thin tone' : 'Aim for full chest weight';
+    elc.className = 'weight-coach';
+    return;
+  }
+  const ok = wantLight ? weight < 0.45 : weight > 0.55;
+  elc.textContent = wantLight
+    ? (ok ? '✓ Light and thin — good' : '↓ Lighten up — let the tone get thinner')
+    : (ok ? '✓ Full chest weight — good' : '↑ More weight — fuller chest tone');
+  elc.className = 'weight-coach ' + (ok ? 'ok' : 'off');
+}
+
+function updateTimbreMeters(color, weight, breath) {
+  const b = el('fsBreath');
+  if (b) b.style.width = (breath != null ? Math.round(breath * 100) : 0) + '%';
+  updateCompass(color, weight);
+}
+
+let _compassCtx = null;
+const DENS_N = 28;                 // density grid resolution
+let densGrid = null;
+let smC = null, smW = null;        // smoothed live position
+let homeC = null, homeW = null;    // slow "home" (characteristic) position
+
+function clearCompass() {
+  densGrid = new Float32Array(DENS_N * DENS_N);
+  smC = smW = homeC = homeW = null;
+  drawCompass();
+}
+
+function updateCompass(color, weight) {
+  if (!densGrid) densGrid = new Float32Array(DENS_N * DENS_N);
+  // Decay the heat-cloud so it reflects a moving ~few-second window.
+  for (let i = 0; i < densGrid.length; i++) densGrid[i] *= 0.99;
+  if (color != null && weight != null) {
+    if (smC == null) { smC = color; smW = weight; homeC = color; homeW = weight; }
+    else {
+      smC += (color - smC) * 0.30;   // fast smoothing for the live dot
+      smW += (weight - smW) * 0.30;
+      homeC += (color - homeC) * 0.02; // slow average = characteristic timbre
+      homeW += (weight - homeW) * 0.02;
+    }
+    const gx = Math.max(0, Math.min(DENS_N - 1, Math.floor(smC * DENS_N)));
+    const gy = Math.max(0, Math.min(DENS_N - 1, Math.floor((1 - smW) * DENS_N)));
+    const k = gy * DENS_N + gx;
+    densGrid[k] = Math.min(50, densGrid[k] + 1);
+  }
+  drawCompass();
+}
+
+function hslToRgb(h, s, l) {
+  let r, g, b;
+  if (s === 0) { r = g = b = l; }
+  else {
+    const hue2rgb = (p, q, t) => {
+      if (t < 0) t += 1; if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1 / 3); g = hue2rgb(p, q, h); b = hue2rgb(p, q, h - 1 / 3);
+  }
+  return [r * 255, g * 255, b * 255];
+}
+
+// Cached colour-wheel background: hue rotates by angle around the centre,
+// saturation/lightness grow with radius — vivid edges, neutral-dark centre
+// (no muddy brown like the old bilinear RGB blend).
+let _compassBg = null, _compassBgPx = 0;
+function compassBg(px) {
+  if (_compassBg && _compassBgPx === px) return _compassBg;
+  const off = document.createElement('canvas');
+  off.width = px; off.height = px;
+  const c = off.getContext('2d');
+  const img = c.createImageData(px, px);
+  for (let y = 0; y < px; y++) {
+    for (let x = 0; x < px; x++) {
+      const nx = (x / (px - 1) - 0.5) * 2;
+      const ny = (y / (px - 1) - 0.5) * 2;
+      const ang = Math.atan2(ny, nx) * 180 / Math.PI;
+      const hue = ((ang + 360) % 360) / 360;
+      const rad = Math.min(1, Math.hypot(nx, ny));
+      const [r, g, b] = hslToRgb(hue, 0.32 + 0.55 * rad, 0.30 + 0.16 * rad);
+      const i = (y * px + x) * 4;
+      img.data[i] = r; img.data[i + 1] = g; img.data[i + 2] = b; img.data[i + 3] = 205;
+    }
+  }
+  c.putImageData(img, 0, 0);
+  _compassBg = off; _compassBgPx = px;
+  return off;
+}
+
+function drawCompass() {
+  const canvas = el('fsCompass');
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const S = canvas.clientWidth || 150;
+  if (canvas.width !== Math.round(S * dpr)) { canvas.width = S * dpr; canvas.height = S * dpr; _compassCtx = null; }
+  if (!_compassCtx) _compassCtx = canvas.getContext('2d');
+  const ctx = _compassCtx;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, S, S);
+  ctx.fillStyle = '#12141c';
+  ctx.fillRect(0, 0, S, S);
+
+  const pad = 16;
+  const x0 = pad, x1 = S - pad, y0 = pad, y1 = S - pad;
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const bw = x1 - x0, bh = y1 - y0;
+  const mapX = (c) => x0 + c * bw;          // dark(0) → left, bright(1) → right
+  const mapY = (w) => y1 - w * bh;          // light(0) → bottom, heavy(1) → top
+
+  // rounded clip for the plot area
+  ctx.save();
+  ctx.beginPath();
+  const r = 8;
+  ctx.moveTo(x0 + r, y0);
+  ctx.arcTo(x1, y0, x1, y1, r); ctx.arcTo(x1, y1, x0, y1, r);
+  ctx.arcTo(x0, y1, x0, y0, r); ctx.arcTo(x0, y0, x1, y0, r);
+  ctx.closePath();
+  ctx.clip();
+
+  ctx.drawImage(compassBg(canvas.width), x0, y0, bw, bh);
+
+  // density heat-cloud — brighter where the timbre spends time
+  if (densGrid) {
+    const cw = bw / DENS_N, ch = bh / DENS_N;
+    for (let gy = 0; gy < DENS_N; gy++) {
+      for (let gx = 0; gx < DENS_N; gx++) {
+        const v = densGrid[gy * DENS_N + gx];
+        if (v < 0.4) continue;
+        ctx.fillStyle = `rgba(255,255,255,${Math.min(0.6, v / 12)})`;
+        ctx.fillRect(x0 + gx * cw, y0 + gy * ch, cw + 0.5, ch + 0.5);
+      }
+    }
+  }
+  ctx.restore();
+
+  // axes
+  ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cx, y0); ctx.lineTo(cx, y1);
+  ctx.moveTo(x0, cy); ctx.lineTo(x1, cy);
+  ctx.stroke();
+
+  // corner (quadrant) labels
+  ctx.font = '8px -apple-system, "Segoe UI", sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.78)';
+  ctx.textAlign = 'left';  ctx.fillText('full', x0 + 4, y0 + 11);
+  ctx.textAlign = 'right'; ctx.fillText('belty', x1 - 4, y0 + 11);
+  ctx.textAlign = 'left';  ctx.fillText('mellow', x0 + 4, y1 - 5);
+  ctx.textAlign = 'right'; ctx.fillText('airy', x1 - 4, y1 - 5);
+
+  // edge labels (in the dark margin)
+  ctx.fillStyle = '#c8cce0';
+  ctx.font = '9px -apple-system, "Segoe UI", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('heavy', cx, y0 - 5);
+  ctx.fillText('light', cx, y1 + 12);
+  ctx.save(); ctx.translate(x0 - 5, cy); ctx.rotate(-Math.PI / 2); ctx.fillText('dark', 0, 0); ctx.restore();
+  ctx.save(); ctx.translate(x1 + 5, cy); ctx.rotate(Math.PI / 2); ctx.fillText('bright', 0, 0); ctx.restore();
+
+  // "home" marker — slow average = characteristic timbre (gold ring + crosshair)
+  if (homeC != null) {
+    const hx = mapX(homeC), hy = mapY(homeW);
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(hx, hy, 9, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(hx - 12, hy); ctx.lineTo(hx + 12, hy);
+    ctx.moveTo(hx, hy - 12); ctx.lineTo(hx, hy + 12);
+    ctx.globalAlpha = 0.5; ctx.stroke(); ctx.globalAlpha = 1;
+  }
+
+  // smoothed live position — white dot with dark ring so it pops on any colour
+  if (smC != null) {
+    const x = mapX(smC), y = mapY(smW);
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.lineWidth = 2.5; ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.stroke();
+  }
+}
+
+let _fsSpecCtx = null;
+function drawSpectrum() {
+  const canvas = el('fsSpectrum');
+  if (!canvas || !tracker.freqData) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth || 600, H = canvas.clientHeight || 70;
+  if (canvas.width !== Math.round(W * dpr)) { canvas.width = W * dpr; canvas.height = H * dpr; _fsSpecCtx = null; }
+  if (!_fsSpecCtx) { _fsSpecCtx = canvas.getContext('2d'); }
+  const ctx = _fsSpecCtx;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#161821';
+  ctx.fillRect(0, 0, W, H);
+  const data = tracker.freqData;
+  const binHz = tracker.binHz || 23;
+  const maxBin = Math.min(data.length - 1, Math.floor(4000 / binHz));
+  for (let i = 1; i <= maxBin; i++) {
+    const norm = Math.max(0, Math.min(1, (data[i] + 90) / 90)); // -90dB→0, 0dB→1
+    if (norm <= 0.01) continue;
+    const x = (i / maxBin) * W;
+    const h = norm * (H - 4);
+    ctx.fillStyle = `hsl(${160 + (i / maxBin) * 130}, 65%, ${38 + norm * 32}%)`;
+    ctx.fillRect(x, H - h, Math.max(1, W / maxBin), h);
   }
 }
 
@@ -1771,25 +2040,73 @@ function renderHeatmap(sessions) {
   for (const s of sessions) xpByDate[s.date] = (xpByDate[s.date] || 0) + (s.xp || 0);
   const maxXp = Math.max(1, ...Object.values(xpByDate));
   const today = new Date(); today.setHours(0, 0, 0, 0);
+
+  const WEEKS = 13;
+  // Start on the Sunday that begins the earliest visible week.
   const start = new Date(today);
-  start.setDate(start.getDate() - 83);
-  start.setDate(start.getDate() - start.getDay()); // align to Sunday
-  const cells = [];
+  start.setDate(start.getDate() - start.getDay() - (WEEKS - 1) * 7);
+
+  const levelFor = (xp) => {
+    if (!xp) return 0;
+    const r = xp / maxXp;
+    return r > 0.75 ? 4 : r > 0.5 ? 3 : r > 0.25 ? 2 : 1;
+  };
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  // Build weeks (columns). Each week's month is taken from its midweek day
+  // (Wednesday) so a month label sits over the column where that month
+  // actually dominates, not where a stray Sunday spills over.
+  const weeks = [];
   const cur = new Date(start);
-  while (cur <= today) {
-    const key = ymd(cur);
-    const xp = xpByDate[key] || 0;
-    let level = 0;
-    if (xp > 0) {
-      const r = xp / maxXp;
-      level = r > 0.75 ? 4 : r > 0.5 ? 3 : r > 0.25 ? 2 : 1;
+  for (let w = 0; w < WEEKS; w++) {
+    const cells = [];
+    const wed = new Date(cur); wed.setDate(wed.getDate() + 3);
+    for (let d = 0; d < 7; d++) {
+      const future = cur > today;
+      const key = ymd(cur);
+      const xp = xpByDate[key] || 0;
+      cells.push({ future, key, xp, lvl: levelFor(xp) });
+      cur.setDate(cur.getDate() + 1);
     }
-    cells.push({ level, key, xp });
-    cur.setDate(cur.getDate() + 1);
+    weeks.push({ cells, month: wed.getMonth() });
   }
-  wrap.innerHTML = cells.map((c) =>
-    `<div class="hm-cell ${c.level ? 'l' + c.level : ''}" title="${c.key}: ${c.xp} XP"></div>`
-  ).join('');
+
+  // Group consecutive same-month weeks into separate blocks, each its own
+  // 7-row grid, laid out with a gap between months so they read as clusters.
+  let blocksHtml = '';
+  for (let i = 0; i < WEEKS; ) {
+    const m = weeks[i].month;
+    let j = i;
+    while (j + 1 < WEEKS && weeks[j + 1].month === m) j++;
+    const span = j - i + 1;
+    const label = span >= 2 ? MONTHS[m] : '';
+    let cellsHtml = '';
+    for (let k = i; k <= j; k++) {
+      for (const c of weeks[k].cells) {
+        cellsHtml += c.future
+          ? '<div class="cal-cell empty"></div>'
+          : `<div class="cal-cell ${c.lvl ? 'l' + c.lvl : ''}" title="${c.key}: ${c.xp} XP"></div>`;
+      }
+    }
+    blocksHtml += `<div class="cal-month-block">
+      <div class="cal-month">${label}</div>
+      <div class="cal-grid" style="grid-template-columns:repeat(${span},12px)">${cellsHtml}</div>
+    </div>`;
+    i = j + 1;
+  }
+
+  const weekdays = ['', 'Mon', '', 'Wed', '', 'Fri', ''];
+  const wdHtml = weekdays.map((d) => `<div class="cal-weekday">${d}</div>`).join('');
+
+  wrap.innerHTML = `
+    <div class="cal">
+      <div class="cal-weekdays">${wdHtml}</div>
+      <div class="cal-months-row">${blocksHtml}</div>
+    </div>
+    <div class="cal-legend">Less
+      <div class="cal-cell"></div><div class="cal-cell l1"></div><div class="cal-cell l2"></div><div class="cal-cell l3"></div><div class="cal-cell l4"></div>
+      More
+    </div>`;
 }
 
 function _setupCanvas(canvas) {
@@ -2608,6 +2925,7 @@ el('importSchemaBtn').addEventListener('click', () => {
 el('fsBackBtn').addEventListener('click', exitFreestyle);
 el('fsRecBtn').addEventListener('click', toggleFreestyleRecording);
 el('fsClearBtn').addEventListener('click', clearFreestyleTrace);
+el('fsSourceBtn').addEventListener('click', toggleFreestyleSource);
 
 // Dashboard
 el('dashboardBack').addEventListener('click', showIdle);

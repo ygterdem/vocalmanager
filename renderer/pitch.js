@@ -21,6 +21,8 @@ const TICK_MS = 25;
 // Median window size — kills single-frame octave glitches.
 const MEDIAN_WINDOW = 5;
 
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+
 export class PitchTracker {
   constructor(onUpdate) {
     this.onUpdate = onUpdate;
@@ -41,36 +43,64 @@ export class PitchTracker {
 
   async start() {
     if (this.running) return;
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false
-      }
-    });
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     // Some platforms start the context suspended; resume after the user
     // gesture that triggered start() (mic button click counts).
     if (this.ctx.state === 'suspended') {
       try { await this.ctx.resume(); } catch (_) {}
     }
-    this.input = this.ctx.createMediaStreamSource(this.stream);
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 2048;
-    this.input.connect(this.analyser);
 
     this.detector = PitchDetector.forFloat32Array(this.analyser.fftSize);
     // Looser thresholds so soft ng-sirens and lip trills (which are nasal /
     // buzzy and lower-clarity than a clear sung tone) still register.
     this.detector.minVolumeDecibels = -55;
     this.buf = new Float32Array(this.detector.inputLength);
+    // Frequency-domain buffer for timbre/spectral features + the spectrum view.
+    this.freqData = new Float32Array(this.analyser.frequencyBinCount);
+    this.binHz = this.ctx.sampleRate / this.analyser.fftSize;
     this.medianBuf = [];
     this.locked = false;
     this.noiseFloorDb = NOISE_FLOOR_REF;
     this.calibrationSamples = [];
     this.calibratingUntil = performance.now() + 800;
+
+    await this.useMic();
     this.running = true;
     this.timer = setInterval(() => this._tick(), TICK_MS);
+  }
+
+  _attachStream(stream) {
+    if (this.input) { try { this.input.disconnect(); } catch (_) {} }
+    if (this.stream && this.stream !== stream) {
+      this.stream.getTracks().forEach((t) => t.stop());
+    }
+    this.stream = stream;
+    this.input = this.ctx.createMediaStreamSource(stream);
+    this.input.connect(this.analyser);
+    this.recalibrate(); // new source → different floor
+  }
+
+  async useMic() {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+    this._attachStream(stream);
+    this.sourceMode = 'mic';
+  }
+
+  // Capture system/desktop audio (Windows loopback) so the meters/spectrum can
+  // analyze whatever is playing on the PC. Requires the main process's
+  // setDisplayMediaRequestHandler to grant loopback audio.
+  async useSystemAudio() {
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    stream.getVideoTracks().forEach((t) => t.stop()); // we only want audio
+    if (!stream.getAudioTracks().length) {
+      throw new Error('No system-audio track was provided.');
+    }
+    this._attachStream(stream);
+    this.sourceMode = 'system';
   }
 
   /**
@@ -127,6 +157,13 @@ export class PitchTracker {
     // mics. A quieter-than-typical mic (low gain) sees higher absolute dB.
     const normalizedDb = rawDb - (this.noiseFloorDb - NOISE_FLOOR_REF);
 
+    // Frequency-domain snapshot (kept for the spectrum view) + timbre features.
+    // Compute whenever there's meaningful signal — not only when a single
+    // pitch locks — so system audio (polyphonic music) still gets meters.
+    this.analyser.getFloatFrequencyData(this.freqData);
+    const hasSignal = normalizedDb > (NOISE_FLOOR_REF + 12);
+    const timbre = hasSignal ? this._spectralFeatures(outFreq) : null;
+
     const note = outFreq ? freqToNote(outFreq) : null;
     this.onUpdate({
       freq: outFreq,
@@ -135,8 +172,72 @@ export class PitchTracker {
       db: normalizedDb,
       rawDb,
       noiseFloor: this.noiseFloorDb,
-      calibrating: now < this.calibratingUntil
+      calibrating: now < this.calibratingUntil,
+      color: timbre ? timbre.color : null,     // 0=dark, 1=bright
+      weight: timbre ? timbre.weight : null,    // 0=light, 1=heavy
+      breath: timbre ? timbre.breath : null,    // 0=clear, 1=breathy
+      centroid: timbre ? timbre.centroid : null
     });
+  }
+
+  _binDbAt(freq) {
+    const i = Math.round(freq / this.binHz);
+    if (i < 0 || i >= this.freqData.length) return -120;
+    return this.freqData[i];
+  }
+
+  // Derive perceptual timbre measures from the magnitude spectrum. These are
+  // relative/uncalibrated (mic, distance, and room shift them) — good for live
+  // biofeedback, not absolute scoring.
+  _spectralFeatures(f0) {
+    const data = this.freqData;
+    const binHz = this.binHz;
+    const loBin = Math.max(1, Math.floor(80 / binHz));
+    const hiBin = Math.min(data.length - 1, Math.floor(6000 / binHz));
+    const splitHz = 1800;
+    let sumMag = 0, sumFMag = 0, logSum = 0, count = 0, lowE = 0, highE = 0;
+    for (let i = loBin; i <= hiBin; i++) {
+      const db = data[i];
+      if (db < -100) continue;
+      const mag = Math.pow(10, db / 20);
+      const f = i * binHz;
+      sumMag += mag;
+      sumFMag += f * mag;
+      logSum += Math.log(mag + 1e-9);
+      count++;
+      if (f < splitHz) lowE += mag; else highE += mag;
+    }
+    if (sumMag <= 0 || count === 0) return null;
+
+    // Wide input windows (cover full mixes + solo voice) with a moderate
+    // expansion so artists/voices spread across the compass without pinning to
+    // the edges. GAIN is the one knob: 1.0 = clustered, 1.7 = slams the edges.
+    const GAIN = 1.4;
+    const expand = (v, g) => clamp01(0.5 + (v - 0.5) * g);
+
+    const centroid = sumFMag / sumMag;
+    const color = expand((centroid - 400) / (4200 - 400), GAIN);
+
+    // Weight. With a single pitch (a sung note): H1–H2 — heavy/pressed voices
+    // have a strong 2nd harmonic; light/breathy voices are H1-dominant.
+    // Without one (polyphonic music): spectral tilt — denser upper-harmonic
+    // energy reads "heavier".
+    let weight;
+    if (f0 && f0 > 0) {
+      const h1 = this._binDbAt(f0);
+      const h2 = this._binDbAt(2 * f0);
+      const h1h2 = h1 - h2;                     // dB
+      weight = expand((14 - h1h2) / 28, GAIN);  // +14dB→light(0), -14dB→heavy(1)
+    } else {
+      weight = expand((highE / (lowE + highE)) * 1.4, GAIN);
+    }
+
+    // Breathiness via spectral flatness: noisy/airy tone → flatter spectrum.
+    const geoMean = Math.exp(logSum / count);
+    const arithMean = sumMag / count;
+    const breath = clamp01((geoMean / (arithMean + 1e-9)) * 3.2);
+
+    return { color, weight, breath, centroid };
   }
 
   stop() {

@@ -132,9 +132,9 @@ export const ROUTINE = [
     name: '5-tone "nay" scale — bridge',
     tip: 'Same pattern, higher. Let the sound get smaller as you go up. DO NOT push chest into the top.',
     challenges: [
-      { type: 'scale', sequence: ['G3', 'A3', 'B3', 'C4', 'D4'], perNoteMs: 800, toleranceCents: 60,
+      { type: 'scale', sequence: ['G3', 'A3', 'B3', 'C4', 'D4'], perNoteMs: 800, toleranceCents: 60, coachWeight: 'light',
         label: 'Ascending G3 → D4', subhint: 'Drop volume on top. Thinner = higher.' },
-      { type: 'scale', sequence: ['D4', 'C4', 'B3', 'A3', 'G3'], perNoteMs: 800, toleranceCents: 60,
+      { type: 'scale', sequence: ['D4', 'C4', 'B3', 'A3', 'G3'], perNoteMs: 800, toleranceCents: 60, coachWeight: 'light',
         label: 'Descending D4 → G3', subhint: 'Stay in mix, don\'t crash back into chest.' }
     ]
   },
@@ -154,11 +154,11 @@ export const ROUTINE = [
     name: 'Falsetto / head voice access',
     tip: 'Light "oo" or "wee". Flip cleanly into a thinner, lighter register — falsetto for males. This unlocks the upper notes where intimate singing styles sit.',
     challenges: [
-      { type: 'slide', from: 'C4', to: 'A4', checkpoints: ['C4', 'E4', 'G4', 'A4'], toleranceCents: 90,
+      { type: 'slide', from: 'C4', to: 'A4', checkpoints: ['C4', 'E4', 'G4', 'A4'], toleranceCents: 90, coachWeight: 'light',
         label: 'Flip into head voice', subhint: 'Start in mix, let the voice get THINNER as you go up. Don\'t push.' },
-      { type: 'hold',  target: 'A4', holdMs: 2500, toleranceCents: 90,
+      { type: 'hold',  target: 'A4', holdMs: 2500, toleranceCents: 90, coachWeight: 'light',
         label: 'Sustain A4 in light voice', subhint: 'Falsetto is fine. Soft, breathy is the goal.' },
-      { type: 'slide', from: 'A4', to: 'C4', checkpoints: ['A4', 'G4', 'E4', 'C4'], toleranceCents: 90,
+      { type: 'slide', from: 'A4', to: 'C4', checkpoints: ['A4', 'G4', 'E4', 'C4'], toleranceCents: 90, coachWeight: 'light',
         label: 'Slide back into mix', subhint: 'Don\'t crash back into chest — let it glide.' }
     ]
   },

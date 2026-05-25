@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, nativeImage, session, systemPreferences, powerMonitor } = require('electron');
+const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, nativeImage, session, systemPreferences, powerMonitor, desktopCapturer } = require('electron');
 const path = require('path');
 const Store = require('electron-store');
 const { autoUpdater } = require('electron-updater');
@@ -92,15 +92,16 @@ function getTrayIcon() {
 
 function createMainWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
+    if (!mainWindow.isMaximized()) mainWindow.maximize();
     mainWindow.show();
     mainWindow.focus();
     return mainWindow;
   }
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 760,
-    minWidth: 880,
-    minHeight: 720,
+    width: 1280,
+    height: 860,
+    minWidth: 860,
+    minHeight: 560,
     show: false,
     title: 'Vocal Manager',
     backgroundColor: '#0e0f13',
@@ -113,6 +114,7 @@ function createMainWindow() {
   mainWindow.removeMenu();
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.once('ready-to-show', () => {
+    mainWindow.maximize();   // always open using the full screen
     mainWindow.show();
     if (process.argv.includes('--enable-logging') || process.env.VM_DEVTOOLS) {
       mainWindow.webContents.openDevTools({ mode: 'detach' });
@@ -276,6 +278,16 @@ if (!gotLock) {
     session.defaultSession.setPermissionCheckHandler((wc, permission) => {
       if ((permission === 'media' || permission === 'audioCapture') && isOwnRenderer(wc)) return true;
       return false;
+    });
+
+    // System-audio (loopback) capture for "listen to what's playing on the PC".
+    // We auto-provide a screen source + loopback audio so getDisplayMedia in the
+    // renderer doesn't pop a picker; the renderer drops the video track and
+    // only analyzes the audio.
+    session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+      desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
+        callback({ video: sources[0], audio: 'loopback' });
+      }).catch(() => callback({}));
     });
     if (process.platform === 'darwin' && systemPreferences.askForMediaAccess) {
       systemPreferences.askForMediaAccess('microphone').catch(() => {});

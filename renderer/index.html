@@ -156,8 +156,23 @@
         <div><span class="label">Cents</span><span class="big-num" id="fsCents">—</span></div>
         <div><span class="label">Loudness</span><span class="big-num" id="fsDb">— dB</span></div>
       </div>
+      <div class="fs-source-label" id="fsSourceLabel">Source: microphone</div>
+      <div class="timbre-block">
+        <canvas id="fsCompass" class="fs-compass" title="Color (dark↔bright) × Weight (light↔heavy)"></canvas>
+        <div class="timbre-side">
+          <div class="timbre-meters">
+            <div class="timbre-row">
+              <span class="tm-label">Breath</span><span class="tm-end">clear</span>
+              <div class="tm-bar"><div class="tm-fill breath" id="fsBreath"></div></div>
+              <span class="tm-end">breathy</span>
+            </div>
+          </div>
+          <canvas id="fsSpectrum" class="fs-spectrum" title="Live spectrum — your overtones"></canvas>
+        </div>
+      </div>
       <div id="fsPlayback" class="summary-recording"></div>
       <div class="song-controls">
+        <button id="fsSourceBtn">🔊 Listen to PC audio</button>
         <button id="fsRecBtn">Pause recording</button>
         <button id="fsClearBtn">Clear trace</button>
         <button id="fsBackBtn" class="danger">Back</button>
@@ -198,7 +213,7 @@
         <div class="dash-stat"><div class="label">Best stability</div><div class="big-num" id="dashBestStab">—</div></div>
       </div>
       <div class="dash-block">
-        <div class="dash-block-title">Practice calendar <span class="dash-sub">— last 12 weeks, brighter = more XP</span></div>
+        <div class="dash-block-title">Practice calendar <span class="dash-sub">— last 13 weeks, greener = more XP that day</span></div>
         <div class="heatmap" id="heatmap"></div>
       </div>
       <div class="dash-block">
@@ -369,6 +384,7 @@
           <div class="progress-text" id="progressText">0%</div>
         </div>
         <div class="match-indicator" id="matchIndicator">listening…</div>
+        <div class="weight-coach" id="weightCoach"></div>
         <div class="mic-debug" id="micDebug">mic: —</div>
         <div class="challenge-controls">
           <button id="pauseBtn" class="ghost" title="Pause / resume (P)">Pause</button>
