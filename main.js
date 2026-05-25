@@ -489,3 +489,119 @@ ipcMain.handle('update:install', () => {
   // isSilent=true (no installer UI), isForceRunAfter=true (relaunch after).
   autoUpdater.quitAndInstall(true, true);
 });
+
+// ---------- PER-APPLICATION AUDIO CAPTURE ----------
+// Capture audio from one process (e.g. Spotify) via the Windows process-loopback
+// API, so Freestyle can match just that app — not the whole system mix, which
+// would also pick up our own "Hear my voice" monitor. PCM is 16-bit LE stereo
+// @48kHz; chunks are forwarded raw to the renderer. Loaded defensively: any
+// failure (non-Windows, missing binary) leaves the existing system-loopback
+// path untouched.
+let appLoopback = null;
+try {
+  appLoopback = require('application-loopback');
+  // In a packaged build the bundled .exe files can't be spawned from inside
+  // the asar archive — electron-builder unpacks them (see build.asarUnpack),
+  // so point the wrapper at the unpacked copy.
+  if (app.isPackaged && typeof appLoopback.setExecutablesRoot === 'function') {
+    appLoopback.setExecutablesRoot(
+      path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'application-loopback', 'bin')
+    );
+  }
+} catch (e) {
+  console.warn('[app-capture] application-loopback unavailable:', (e && e.message) || e);
+}
+
+const { spawn: spawnChild, execSync } = require('child_process');
+
+// ProcessList.exe prints window titles via GetWindowTextA — i.e. in the system
+// ANSI codepage, not UTF-8 — so the package's utf8 reader mangles accented
+// names (e.g. "maç" → "ma�"). Spawn it ourselves and decode with the real ACP.
+let _ansiLabel = null;
+function ansiDecoderLabel() {
+  if (_ansiLabel) return _ansiLabel;
+  try {
+    const out = execSync('reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage" /v ACP', { encoding: 'utf8' });
+    const m = out.match(/ACP\s+REG_SZ\s+(\d+)/i);
+    if (m && m[1] !== '65001') _ansiLabel = 'windows-' + m[1];
+  } catch (_) {}
+  if (!_ansiLabel) _ansiLabel = 'utf-8';
+  return _ansiLabel;
+}
+
+function listWindowsDecoded() {
+  return new Promise((resolve) => {
+    let exePath;
+    try { exePath = appLoopback.getProcessListBinaryPath(); } catch (_) { return resolve([]); }
+    let child;
+    try { child = spawnChild(exePath, [], { stdio: ['ignore', 'pipe', 'ignore'] }); }
+    catch (_) { return resolve([]); }
+    const chunks = [];
+    child.on('error', () => resolve([]));
+    child.stdout.on('data', (b) => chunks.push(b));
+    child.stdout.on('close', () => {
+      let text;
+      try { text = new TextDecoder(ansiDecoderLabel()).decode(Buffer.concat(chunks)); }
+      catch (_) { text = Buffer.concat(chunks).toString('latin1'); }
+      const wins = [];
+      for (const line of text.split('\n')) {
+        const parts = line.replace(/\r$/, '').split(';');
+        // title may itself contain ';' — keep everything after pid;hwnd
+        if (parts.length >= 3 && parts[0] && parts[2]) {
+          wins.push({ processId: parts[0], title: parts.slice(2).join(';').trim() });
+        }
+      }
+      resolve(wins);
+    });
+  });
+}
+
+let activeCapturePid = null;
+
+ipcMain.handle('appCapture:list', async () => {
+  if (!appLoopback) return { ok: false, apps: [] };
+  try {
+    const wins = await listWindowsDecoded();
+    // Collapse to one entry per process (a process can own several windows);
+    // keep the first non-empty title as the label.
+    const byPid = new Map();
+    for (const w of wins) {
+      if (!w || !w.processId || !w.title) continue;
+      if (!byPid.has(w.processId)) byPid.set(w.processId, w.title);
+    }
+    const apps = [...byPid].map(([pid, title]) => ({ pid, title }));
+    return { ok: true, apps };
+  } catch (e) {
+    return { ok: false, apps: [], reason: String((e && e.message) || e) };
+  }
+});
+
+ipcMain.handle('appCapture:start', (e, pid) => {
+  if (!appLoopback) return { ok: false, reason: 'unavailable' };
+  pid = String(pid);
+  try {
+    if (activeCapturePid) { try { appLoopback.stopAudioCapture(activeCapturePid); } catch (_) {} }
+    const wc = e.sender;
+    appLoopback.startAudioCapture(pid, {
+      onData: (chunk) => {
+        if (!wc.isDestroyed()) wc.send('appCapture:data', chunk);
+      }
+    });
+    activeCapturePid = pid;
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('appCapture:stop', () => {
+  if (!appLoopback || !activeCapturePid) return { ok: true };
+  try { appLoopback.stopAudioCapture(activeCapturePid); } catch (_) {}
+  activeCapturePid = null;
+  return { ok: true };
+});
+
+// Stop any capture when the window goes away so the child process doesn't leak.
+app.on('before-quit', () => {
+  if (appLoopback && activeCapturePid) { try { appLoopback.stopAudioCapture(activeCapturePid); } catch (_) {} activeCapturePid = null; }
+});

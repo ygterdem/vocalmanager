@@ -561,7 +561,7 @@ function teardownCurrent() {
     state.freestyleRecording = false;
     stopFreestyleRecording();
     tracker.setMonitorEnabled(false);
-    tracker.stopReference();
+    stopMatchSource();
     if (state.freestyleTrace) { state.freestyleTrace.destroy(); state.freestyleTrace = null; }
   }
   restoreMicSource();
@@ -923,6 +923,7 @@ async function enterFreestyle() {
   loadFreestyleMonitorPrefs();
   applyFreestyleMonitor();
   resetFreestyleMatchUI();
+  refreshMatchSources();
 }
 
 function exitFreestyle() {
@@ -930,47 +931,66 @@ function exitFreestyle() {
   state.freestyleRecording = false;
   stopFreestyleRecording();
   tracker.setMonitorEnabled(false);
-  tracker.stopReference();
+  stopMatchSource();
   if (state.freestyleTrace) { state.freestyleTrace.destroy(); state.freestyleTrace = null; }
   restoreMicSource();
   showIdle();
 }
 
-// "Match to PC audio": track the PC's pitch alongside the mic so you can sing
-// to overlay your (green) line onto the PC's (amber) line.
+// "Match to PC audio": track a reference's pitch alongside the mic so you can
+// sing to overlay your (green) line onto its (amber) line. The reference is
+// either the whole system mix (getDisplayMedia loopback) or one captured app
+// (process loopback) chosen in the Match-source dropdown.
 async function toggleFreestyleMatch() {
-  const btn = el('fsMatchBtn');
   if (tracker.hasReference()) {
-    tracker.stopReference();
+    await stopMatchSource();
     resetFreestyleMatchUI();
     return;
   }
+  await startMatchSource();
+}
+
+async function startMatchSource() {
+  const btn = el('fsMatchBtn');
+  const sel = el('fsMatchSource');
+  const val = (sel && sel.value) || 'system';
   try {
     btn.textContent = 'Starting…'; btn.disabled = true;
-    // "Hear my voice" plays into the same output Windows loopback captures, so
-    // it would bleed into the PC reference. Turn it off while matching.
-    if (el('fsMonOn').checked) {
-      el('fsMonOn').checked = false;
-      applyFreestyleMonitor();
-      showToast('Turned off "Hear my voice" so it stays out of the PC audio.', 'ok');
-    }
-    // Keep the mic as the analyzed voice while PC audio becomes the reference.
+    // Keep the mic as the analyzed voice while the reference is something else.
     if (tracker.sourceMode === 'system') {
       await tracker.useMic();
       el('fsSourceBtn').textContent = '🔊 Listen to PC audio';
       el('fsSourceLabel').textContent = 'Source: microphone';
     }
-    await tracker.startReference();
+    let label = 'PC audio';
+    if (val.startsWith('pid:')) {
+      const res = await window.vm.startAppCapture(val.slice(4));
+      if (!res || !res.ok) throw new Error((res && res.reason) || 'app capture failed');
+      tracker.startAppReference();
+      label = sel.options[sel.selectedIndex].textContent;
+    } else {
+      await tracker.startReference(); // whole-system loopback
+    }
     btn.disabled = false;
     btn.textContent = '🎯 Stop matching';
     el('fsMatch').style.display = '';
     el('fsCompassLegend').style.display = '';
-    showToast('Matching PC audio — sing to line your green trace up with the amber one.', 'ok');
+    showToast(`Matching ${label} — sing to line your green trace up with the amber one.`, 'ok');
   } catch (e) {
     btn.disabled = false;
     btn.textContent = '🎯 Match to PC audio';
-    showToast('Could not capture PC audio: ' + (e.message || e), 'error');
+    await stopMatchSource();
+    showToast('Could not start matching: ' + (e.message || e), 'error');
   }
+}
+
+// Tear down whichever reference is running (app capture or system loopback).
+async function stopMatchSource() {
+  if (tracker.appRefActive) {
+    tracker.stopAppReference();
+    try { await window.vm.stopAppCapture(); } catch (_) {}
+  }
+  tracker.stopReference(); // safe no-op if the system loopback isn't running
 }
 
 function resetFreestyleMatchUI() {
@@ -981,6 +1001,27 @@ function resetFreestyleMatchUI() {
   const lg = el('fsCompassLegend');
   if (lg) lg.style.display = 'none';
   setPcTimbre(null, null); // drop the PC dot
+}
+
+// Populate the Match-source dropdown with running audio apps (+ system option).
+async function refreshMatchSources() {
+  const sel = el('fsMatchSource');
+  if (!sel) return;
+  const prev = sel.value;
+  let res = null;
+  try { res = await window.vm.listAudioApps(); } catch (_) { res = null; }
+  sel.innerHTML = '<option value="system">System audio (all apps)</option>';
+  if (res && res.ok) {
+    for (const a of res.apps) {
+      const o = document.createElement('option');
+      o.value = 'pid:' + a.pid;
+      o.textContent = a.title.length > 42 ? a.title.slice(0, 41) + '…' : a.title;
+      sel.appendChild(o);
+    }
+  }
+  const stored = localStorage.getItem('fsMatchSource');
+  const want = [prev, stored].find((v) => v && [...sel.options].some((o) => o.value === v));
+  sel.value = want || 'system';
 }
 
 // Fold the mic-vs-PC pitch gap to the nearest octave so singing the same note
@@ -1001,13 +1042,6 @@ function freestyleMatchFeedback(note, refNote) {
 // a 0–100 send that maps to a gentle wet level; ear select pans -1/0/+1.
 function applyFreestyleMonitor() {
   const on = el('fsMonOn').checked;
-  // Can't monitor and match at once: the monitored voice would bleed into the
-  // PC-audio reference (loopback captures the whole output mix). Stop matching.
-  if (on && tracker.hasReference()) {
-    tracker.stopReference();
-    resetFreestyleMatchUI();
-    showToast('Stopped PC-audio matching so your monitored voice stays out of it.', 'ok');
-  }
   tracker.setMonitorPan(Number(el('fsMonEar').value));
   tracker.setMonitorReverb(Number(el('fsMonReverb').value) / 100 * 0.6);
   tracker.setMonitorLevel(Number(el('fsMonLevel').value) / 100);
@@ -3109,6 +3143,14 @@ el('fsRecBtn').addEventListener('click', toggleFreestyleRecording);
 el('fsClearBtn').addEventListener('click', clearFreestyleTrace);
 el('fsSourceBtn').addEventListener('click', toggleFreestyleSource);
 el('fsMatchBtn').addEventListener('click', toggleFreestyleMatch);
+el('fsMatchRefresh').addEventListener('click', refreshMatchSources);
+el('fsMatchSource').addEventListener('change', async () => {
+  localStorage.setItem('fsMatchSource', el('fsMatchSource').value);
+  // If we're already matching, switch the live reference to the new source.
+  if (tracker.hasReference()) { await stopMatchSource(); await startMatchSource(); }
+});
+// Stream captured-app PCM into the reference pitch/timbre path.
+window.vm.onAppCaptureData((chunk) => tracker.pushReferencePcm(chunk));
 el('fsMonOn').addEventListener('change', applyFreestyleMonitor);
 el('fsMonEar').addEventListener('change', applyFreestyleMonitor);
 el('fsMonReverb').addEventListener('input', applyFreestyleMonitor);

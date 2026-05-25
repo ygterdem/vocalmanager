@@ -1,5 +1,12 @@
 import { PitchDetector } from 'pitchy';
+import FFT from 'fft.js';
 import { freqToNote } from './exercises.js';
+
+// Per-application audio reference: the main process captures one app's audio via
+// the Windows process-loopback API and streams 16-bit LE stereo PCM @48kHz. We
+// run pitch + timbre on it ourselves (no Web Audio node), so the format is fixed.
+const APP_REF_RATE = 48000;
+const APP_REF_FFT = 2048;
 
 // Reference noise floor (dBFS). Real-world floors vary by mic gain — we
 // calibrate the user's actual floor for ~800ms at mic-start and shift the
@@ -52,6 +59,9 @@ export class PitchTracker {
     this.refBuf = null;
     this.refMedianBuf = [];
     this.refLocked = false;
+    // Per-application PCM reference (alternative to the getDisplayMedia one).
+    this.appRefActive = false;
+    this.appRefBuf = null;
   }
 
   async start() {
@@ -179,19 +189,24 @@ export class PitchTracker {
     const hasSignal = normalizedDb > (NOISE_FLOOR_REF + 12);
     const timbre = hasSignal ? this._spectralFeatures(outFreq) : null;
 
-    // Reference (PC audio) pitch — independent analyser/detector with its own
-    // hysteresis + median so it doesn't interfere with the mic path. Also pull
-    // its timbre so the PC gets its own compass dot alongside the mic's.
-    const refFreq = this._refPitch();
-    let refTimbre = null;
-    if (this.refAnalyser) {
-      // Loudness gate from the time-domain buffer _refPitch just filled.
-      let s = 0;
-      for (let i = 0; i < this.refBuf.length; i++) s += this.refBuf[i] * this.refBuf[i];
-      const refDb = 20 * Math.log10(Math.max(Math.sqrt(s / this.refBuf.length), 1e-7));
-      if (refDb > NOISE_FLOOR_REF + 12) {
-        this.refAnalyser.getFloatFrequencyData(this.refFreqData);
-        refTimbre = this._spectralFeatures(refFreq, this.refFreqData);
+    // Reference pitch + timbre, so the PC/app gets its own compass dot and the
+    // match feedback alongside the mic. Two sources: a captured app (PCM stream)
+    // takes priority; otherwise the whole-system getDisplayMedia analyser.
+    let refFreq = null, refTimbre = null;
+    if (this.appRefActive) {
+      const r = this._appRefPitch();
+      refFreq = r.freq; refTimbre = r.timbre;
+    } else {
+      refFreq = this._refPitch();
+      if (this.refAnalyser) {
+        // Loudness gate from the time-domain buffer _refPitch just filled.
+        let s = 0;
+        for (let i = 0; i < this.refBuf.length; i++) s += this.refBuf[i] * this.refBuf[i];
+        const refDb = 20 * Math.log10(Math.max(Math.sqrt(s / this.refBuf.length), 1e-7));
+        if (refDb > NOISE_FLOOR_REF + 12) {
+          this.refAnalyser.getFloatFrequencyData(this.refFreqData);
+          refTimbre = this._spectralFeatures(refFreq, this.refFreqData);
+        }
       }
     }
 
@@ -215,18 +230,18 @@ export class PitchTracker {
     });
   }
 
-  _binDbAt(freq, data = this.freqData) {
-    const i = Math.round(freq / this.binHz);
+  _binDbAt(freq, data = this.freqData, binHz = this.binHz) {
+    const i = Math.round(freq / binHz);
     if (i < 0 || i >= data.length) return -120;
     return data[i];
   }
 
   // Derive perceptual timbre measures from the magnitude spectrum. These are
   // relative/uncalibrated (mic, distance, and room shift them) — good for live
-  // biofeedback, not absolute scoring. `data` defaults to the mic spectrum but
-  // can be the PC-audio reference spectrum so both get a compass dot.
-  _spectralFeatures(f0, data = this.freqData) {
-    const binHz = this.binHz;
+  // biofeedback, not absolute scoring. `data`/`binHz` default to the mic
+  // spectrum but can be a reference spectrum (PC audio or a captured app) so
+  // both get a compass dot.
+  _spectralFeatures(f0, data = this.freqData, binHz = this.binHz) {
     const loBin = Math.max(1, Math.floor(80 / binHz));
     const hiBin = Math.min(data.length - 1, Math.floor(6000 / binHz));
     const splitHz = 1800;
@@ -259,8 +274,8 @@ export class PitchTracker {
     // energy reads "heavier".
     let weight;
     if (f0 && f0 > 0) {
-      const h1 = this._binDbAt(f0, data);
-      const h2 = this._binDbAt(2 * f0, data);
+      const h1 = this._binDbAt(f0, data, binHz);
+      const h2 = this._binDbAt(2 * f0, data, binHz);
       const h1h2 = h1 - h2;                     // dB
       weight = expand((14 - h1h2) / 28, GAIN);  // +14dB→light(0), -14dB→heavy(1)
     } else {
@@ -313,7 +328,7 @@ export class PitchTracker {
     this.refLocked = false;
   }
 
-  hasReference() { return !!this.refAnalyser; }
+  hasReference() { return !!this.refAnalyser || this.appRefActive; }
 
   _refPitch() {
     if (!this.refAnalyser) return null;
@@ -330,6 +345,118 @@ export class PitchTracker {
     if (this.refMedianBuf.length > MEDIAN_WINDOW) this.refMedianBuf.shift();
     const sorted = this.refMedianBuf.slice().sort((a, b) => a - b);
     return sorted[Math.floor(sorted.length / 2)];
+  }
+
+  // ---- Per-application PCM reference ---------------------------------------
+  // The main process streams 16-bit LE stereo PCM @48kHz from one captured app.
+  // We keep a mono ring buffer and run pitch (pitchy) + timbre (FFT) on it,
+  // mirroring the getDisplayMedia reference but for a single app's audio.
+  startAppReference() {
+    this.appRefBuf = new Float32Array(APP_REF_FFT * 2); // ring, room for one frame + headroom
+    this.appRefWrite = 0;
+    this.appRefFilled = 0;
+    this._appRefLeftover = null;
+    this.appRefAnalysis = new Float32Array(APP_REF_FFT);
+    this.appRefWin = new Float32Array(APP_REF_FFT);
+    this.appRefDetector = PitchDetector.forFloat32Array(APP_REF_FFT);
+    this.appRefDetector.minVolumeDecibels = -55;
+    this.appRefFFT = new FFT(APP_REF_FFT);
+    this.appRefComplex = this.appRefFFT.createComplexArray();
+    this.appRefMag = new Float32Array(APP_REF_FFT / 2);
+    this.appRefMedianBuf = [];
+    this.appRefLocked = false;
+    this.appRefActive = true;
+  }
+
+  stopAppReference() {
+    this.appRefActive = false;
+    this.appRefBuf = null;
+    this._appRefLeftover = null;
+  }
+
+  // Append a chunk of 16-bit LE stereo PCM (Uint8Array/Buffer) to the ring,
+  // downmixed to mono. Carries over any partial trailing frame between chunks.
+  pushReferencePcm(bytes) {
+    if (!this.appRefActive || !bytes || !bytes.length) return;
+    let data = bytes;
+    if (this._appRefLeftover && this._appRefLeftover.length) {
+      const merged = new Uint8Array(this._appRefLeftover.length + bytes.length);
+      merged.set(this._appRefLeftover, 0);
+      merged.set(bytes, this._appRefLeftover.length);
+      data = merged;
+      this._appRefLeftover = null;
+    }
+    const frames = Math.floor(data.length / 4); // 2 ch * 2 bytes
+    const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const buf = this.appRefBuf, N = buf.length;
+    let w = this.appRefWrite;
+    for (let i = 0; i < frames; i++) {
+      const off = i * 4;
+      const l = dv.getInt16(off, true);
+      const r = dv.getInt16(off + 2, true);
+      buf[w] = (l + r) * 0.5 / 32768;
+      w = (w + 1) % N;
+    }
+    this.appRefWrite = w;
+    this.appRefFilled = Math.min(N, this.appRefFilled + frames);
+    const rem = data.length - frames * 4;
+    if (rem > 0) this._appRefLeftover = data.slice(frames * 4);
+  }
+
+  // Copy the most recent APP_REF_FFT samples (in order) into appRefAnalysis.
+  _appRefReadLatest() {
+    const N = this.appRefBuf.length, S = this.appRefAnalysis.length;
+    if (this.appRefFilled < S) return false;
+    const start = (this.appRefWrite - S + N) % N;
+    for (let i = 0; i < S; i++) this.appRefAnalysis[i] = this.appRefBuf[(start + i) % N];
+    return true;
+  }
+
+  _appRefPitch() {
+    if (!this.appRefActive || !this._appRefReadLatest()) {
+      if (this.appRefMedianBuf) this.appRefMedianBuf.length = 0;
+      return { freq: null, timbre: null };
+    }
+    const [pitch, clarity] = this.appRefDetector.findPitch(this.appRefAnalysis, APP_REF_RATE);
+    const inRange = pitch > 55 && pitch < 1100;
+    if (this.appRefLocked) {
+      if (clarity < CLARITY_EXIT || !inRange) this.appRefLocked = false;
+    } else if (clarity > CLARITY_ENTER && inRange) {
+      this.appRefLocked = true;
+    }
+    let freq = null;
+    if (this.appRefLocked && inRange) {
+      this.appRefMedianBuf.push(pitch);
+      if (this.appRefMedianBuf.length > MEDIAN_WINDOW) this.appRefMedianBuf.shift();
+      const sorted = this.appRefMedianBuf.slice().sort((a, b) => a - b);
+      freq = sorted[Math.floor(sorted.length / 2)];
+    } else {
+      this.appRefMedianBuf.length = 0;
+    }
+    return { freq, timbre: this._appRefTimbre(freq) };
+  }
+
+  // Hann-windowed FFT of the analysis frame → per-bin dB magnitude, reusing the
+  // shared spectral-features math with this source's bin width.
+  _appRefTimbre(freq) {
+    const S = this.appRefAnalysis.length;
+    const win = this.appRefWin;
+    let energy = 0;
+    for (let i = 0; i < S; i++) {
+      const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (S - 1));
+      const v = this.appRefAnalysis[i] * w;
+      win[i] = v;
+      energy += v * v;
+    }
+    if (energy < 1e-7) return null; // effectively silent
+    this.appRefFFT.realTransform(this.appRefComplex, win);
+    this.appRefFFT.completeSpectrum(this.appRefComplex);
+    const mag = this.appRefMag, c = this.appRefComplex;
+    for (let i = 0; i < mag.length; i++) {
+      const re = c[2 * i], im = c[2 * i + 1];
+      mag[i] = 20 * Math.log10(Math.sqrt(re * re + im * im) / S + 1e-9);
+    }
+    return this._spectralFeatures(freq, mag, APP_REF_RATE / S);
   }
 
   // ---- Live voice monitoring ----------------------------------------------
@@ -396,6 +523,7 @@ export class PitchTracker {
   stop() {
     this.running = false;
     this.stopReference();
+    this.stopAppReference();
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
     if (this.ctx) this.ctx.close();

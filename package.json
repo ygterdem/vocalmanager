@@ -4,7 +4,7 @@
   "description": "Background vocal-training reminder app with real-time pitch feedback, tuned for low male voices.",
   "main": "main.js",
   "scripts": {
-    "build:vendor": "esbuild --bundle --format=esm --platform=browser --outfile=renderer/vendor/pitchy.bundle.js node_modules/pitchy/index.js",
+    "build:vendor": "esbuild --bundle --format=esm --platform=browser --outfile=renderer/vendor/pitchy.bundle.js node_modules/pitchy/index.js && esbuild --bundle --format=esm --platform=browser --outfile=renderer/vendor/fft.bundle.js node_modules/fft.js/lib/fft.js",
     "prestart": "npm run build:vendor",
     "start": "electron .",
     "dev": "electron . --enable-logging",
@@ -30,6 +30,9 @@
       "!tests/**",
       "!**/*.test.js"
     ],
+    "asarUnpack": [
+      "node_modules/application-loopback/bin/**"
+    ],
     "win": {
       "target": "nsis",
       "artifactName": "${productName}-Setup-${version}.${ext}"
@@ -52,6 +55,7 @@
     "vitest": "^2.1.9"
   },
   "dependencies": {
+    "application-loopback": "^1.2.7",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.3",
     "pitchy": "^4.1.0"

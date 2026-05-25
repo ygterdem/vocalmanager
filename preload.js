@@ -16,6 +16,11 @@ contextBridge.exposeInMainWorld('vm', {
   getVersion: () => ipcRenderer.invoke('app:version'),
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
+  listAudioApps: () => ipcRenderer.invoke('appCapture:list'),
+  startAppCapture: (pid) => ipcRenderer.invoke('appCapture:start', pid),
+  stopAppCapture: () => ipcRenderer.invoke('appCapture:stop'),
+  onAppCaptureData: (cb) =>
+    ipcRenderer.on('appCapture:data', (_e, chunk) => cb(chunk)),
   onStartSession: (cb) =>
     ipcRenderer.on('start-session', (_e, payload) => cb(payload)),
   onOpenSettings: (cb) =>

@@ -21,6 +21,15 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .app { display: flex; flex-direction: column; padding: 12px 18px; gap: 10px;
   max-width: 1100px; margin: 0 auto; height: 100%; }
 
+/* The header + tabs stay put; the active panel takes the remaining height and
+   scrolls internally instead of running off-screen (e.g. Freestyle, which has a
+   lot of controls). min-height:0 lets the flex item shrink below its content so
+   overflow-y can kick in. */
+.app > section { min-height: 0; overflow-y: auto; }
+.app > section::-webkit-scrollbar { width: 10px; }
+.app > section::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
+.app > section::-webkit-scrollbar-thumb:hover { background: #3a4055; }
+
 .topbar { display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
 .brand { display: flex; gap: 10px; align-items: center; }
 .logo { width: 34px; height: 34px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), var(--target));
@@ -362,6 +371,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border: 1px solid rgba(0,0,0,0.5); }
 .fs-compass-legend .lg-dot.you { background: #6ee7b7; }
 .fs-compass-legend .lg-dot.pc { background: #fbbf24; }
+
+/* FREESTYLE — match source picker */
+.fs-match-source { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.fs-match-source select { flex: 1; max-width: 320px; background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 13px; }
+.fs-mini-btn { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 9px; font-size: 14px; cursor: pointer; line-height: 1; }
+.fs-mini-btn:hover { filter: brightness(1.12); }
 .timbre-side { flex: 1; display: flex; flex-direction: column; gap: 10px; }
 .timbre-side .timbre-meters { margin-bottom: 0; padding: 8px 12px; }
 .timbre-side .fs-spectrum { margin-bottom: 0; height: 104px; }
