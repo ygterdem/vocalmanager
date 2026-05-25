@@ -180,8 +180,20 @@ export class PitchTracker {
     const timbre = hasSignal ? this._spectralFeatures(outFreq) : null;
 
     // Reference (PC audio) pitch — independent analyser/detector with its own
-    // hysteresis + median so it doesn't interfere with the mic path.
+    // hysteresis + median so it doesn't interfere with the mic path. Also pull
+    // its timbre so the PC gets its own compass dot alongside the mic's.
     const refFreq = this._refPitch();
+    let refTimbre = null;
+    if (this.refAnalyser) {
+      // Loudness gate from the time-domain buffer _refPitch just filled.
+      let s = 0;
+      for (let i = 0; i < this.refBuf.length; i++) s += this.refBuf[i] * this.refBuf[i];
+      const refDb = 20 * Math.log10(Math.max(Math.sqrt(s / this.refBuf.length), 1e-7));
+      if (refDb > NOISE_FLOOR_REF + 12) {
+        this.refAnalyser.getFloatFrequencyData(this.refFreqData);
+        refTimbre = this._spectralFeatures(refFreq, this.refFreqData);
+      }
+    }
 
     const note = outFreq ? freqToNote(outFreq) : null;
     this.onUpdate({
@@ -190,6 +202,8 @@ export class PitchTracker {
       note,
       refFreq,
       refNote: refFreq ? freqToNote(refFreq) : null,
+      refColor: refTimbre ? refTimbre.color : null,
+      refWeight: refTimbre ? refTimbre.weight : null,
       db: normalizedDb,
       rawDb,
       noiseFloor: this.noiseFloorDb,
@@ -201,17 +215,17 @@ export class PitchTracker {
     });
   }
 
-  _binDbAt(freq) {
+  _binDbAt(freq, data = this.freqData) {
     const i = Math.round(freq / this.binHz);
-    if (i < 0 || i >= this.freqData.length) return -120;
-    return this.freqData[i];
+    if (i < 0 || i >= data.length) return -120;
+    return data[i];
   }
 
   // Derive perceptual timbre measures from the magnitude spectrum. These are
   // relative/uncalibrated (mic, distance, and room shift them) — good for live
-  // biofeedback, not absolute scoring.
-  _spectralFeatures(f0) {
-    const data = this.freqData;
+  // biofeedback, not absolute scoring. `data` defaults to the mic spectrum but
+  // can be the PC-audio reference spectrum so both get a compass dot.
+  _spectralFeatures(f0, data = this.freqData) {
     const binHz = this.binHz;
     const loBin = Math.max(1, Math.floor(80 / binHz));
     const hiBin = Math.min(data.length - 1, Math.floor(6000 / binHz));
@@ -245,8 +259,8 @@ export class PitchTracker {
     // energy reads "heavier".
     let weight;
     if (f0 && f0 > 0) {
-      const h1 = this._binDbAt(f0);
-      const h2 = this._binDbAt(2 * f0);
+      const h1 = this._binDbAt(f0, data);
+      const h2 = this._binDbAt(2 * f0, data);
       const h1h2 = h1 - h2;                     // dB
       weight = expand((14 - h1h2) / 28, GAIN);  // +14dB→light(0), -14dB→heavy(1)
     } else {
@@ -281,6 +295,7 @@ export class PitchTracker {
     this.refDetector = PitchDetector.forFloat32Array(this.refAnalyser.fftSize);
     this.refDetector.minVolumeDecibels = -55;
     this.refBuf = new Float32Array(this.refDetector.inputLength);
+    this.refFreqData = new Float32Array(this.refAnalyser.frequencyBinCount);
     this.refMedianBuf = [];
     this.refLocked = false;
   }
@@ -293,6 +308,7 @@ export class PitchTracker {
     this.refAnalyser = null;
     this.refDetector = null;
     this.refBuf = null;
+    this.refFreqData = null;
     this.refMedianBuf = [];
     this.refLocked = false;
   }

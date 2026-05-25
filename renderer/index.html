@@ -181,7 +181,13 @@
         <div class="fs-mon-hint">Use headphones — monitoring through speakers will feed back.</div>
       </div>
       <div class="timbre-block">
-        <canvas id="fsCompass" class="fs-compass" title="Color (dark↔bright) × Weight (light↔heavy)"></canvas>
+        <div class="fs-compass-col">
+          <canvas id="fsCompass" class="fs-compass" title="Color (dark↔bright) × Weight (light↔heavy)"></canvas>
+          <div class="fs-compass-legend" id="fsCompassLegend" style="display:none;">
+            <span><i class="lg-dot you"></i>You</span>
+            <span><i class="lg-dot pc"></i>PC</span>
+          </div>
+        </div>
         <div class="timbre-side">
           <div class="timbre-meters">
             <div class="timbre-row">

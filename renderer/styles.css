@@ -353,8 +353,15 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .fs-mon-controls input[type="range"] { flex: 1; min-width: 90px; max-width: 160px; accent-color: #60a5fa; }
 .fs-mon-hint { font-size: 11px; color: var(--muted); margin-top: 8px; }
 .timbre-block { display: flex; gap: 12px; margin-bottom: 12px; align-items: flex-start; }
-.fs-compass { width: 150px; height: 150px; display: block; flex-shrink: 0;
+.fs-compass-col { display: flex; flex-direction: column; align-items: center; gap: 6px; flex-shrink: 0; }
+.fs-compass { width: 150px; height: 150px; display: block;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; }
+.fs-compass-legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted); }
+.fs-compass-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.fs-compass-legend .lg-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block;
+  border: 1px solid rgba(0,0,0,0.5); }
+.fs-compass-legend .lg-dot.you { background: #6ee7b7; }
+.fs-compass-legend .lg-dot.pc { background: #fbbf24; }
 .timbre-side { flex: 1; display: flex; flex-direction: column; gap: 10px; }
 .timbre-side .timbre-meters { margin-bottom: 0; padding: 8px 12px; }
 .timbre-side .fs-spectrum { margin-bottom: 0; height: 104px; }

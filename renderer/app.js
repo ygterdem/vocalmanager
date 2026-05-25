@@ -947,6 +947,13 @@ async function toggleFreestyleMatch() {
   }
   try {
     btn.textContent = 'Starting…'; btn.disabled = true;
+    // "Hear my voice" plays into the same output Windows loopback captures, so
+    // it would bleed into the PC reference. Turn it off while matching.
+    if (el('fsMonOn').checked) {
+      el('fsMonOn').checked = false;
+      applyFreestyleMonitor();
+      showToast('Turned off "Hear my voice" so it stays out of the PC audio.', 'ok');
+    }
     // Keep the mic as the analyzed voice while PC audio becomes the reference.
     if (tracker.sourceMode === 'system') {
       await tracker.useMic();
@@ -957,6 +964,7 @@ async function toggleFreestyleMatch() {
     btn.disabled = false;
     btn.textContent = '🎯 Stop matching';
     el('fsMatch').style.display = '';
+    el('fsCompassLegend').style.display = '';
     showToast('Matching PC audio — sing to line your green trace up with the amber one.', 'ok');
   } catch (e) {
     btn.disabled = false;
@@ -970,6 +978,9 @@ function resetFreestyleMatchUI() {
   if (btn) { btn.textContent = '🎯 Match to PC audio'; btn.disabled = false; }
   const m = el('fsMatch');
   if (m) m.style.display = 'none';
+  const lg = el('fsCompassLegend');
+  if (lg) lg.style.display = 'none';
+  setPcTimbre(null, null); // drop the PC dot
 }
 
 // Fold the mic-vs-PC pitch gap to the nearest octave so singing the same note
@@ -990,6 +1001,13 @@ function freestyleMatchFeedback(note, refNote) {
 // a 0–100 send that maps to a gentle wet level; ear select pans -1/0/+1.
 function applyFreestyleMonitor() {
   const on = el('fsMonOn').checked;
+  // Can't monitor and match at once: the monitored voice would bleed into the
+  // PC-audio reference (loopback captures the whole output mix). Stop matching.
+  if (on && tracker.hasReference()) {
+    tracker.stopReference();
+    resetFreestyleMatchUI();
+    showToast('Stopped PC-audio matching so your monitored voice stays out of it.', 'ok');
+  }
   tracker.setMonitorPan(Number(el('fsMonEar').value));
   tracker.setMonitorReverb(Number(el('fsMonReverb').value) / 100 * 0.6);
   tracker.setMonitorLevel(Number(el('fsMonLevel').value) / 100);
@@ -1472,7 +1490,7 @@ function midiToName(midi) {
   return freqToNote(440 * Math.pow(2, (midi - 69) / 12)).name;
 }
 
-function handlePitch({ freq, clarity, note, db, color, weight, breath, refNote }) {
+function handlePitch({ freq, clarity, note, db, color, weight, breath, refNote, refColor, refWeight }) {
   // Always update the mic-debug line so the user can tell whether the mic
   // is picking up anything at all, even if pitchy filtered the frame out.
   const dbg = el('micDebug');
@@ -1504,6 +1522,9 @@ function handlePitch({ freq, clarity, note, db, color, weight, breath, refNote }
     el('fsCents').textContent = note ? (note.cents >= 0 ? '+' : '') + note.cents : '—';
     el('fsDb').textContent = db != null ? `${Math.round(db)} dB` : '— dB';
     if (tracker.hasReference()) freestyleMatchFeedback(note, refNote);
+    // Plot the PC's timbre as a second compass dot (set before the mic update,
+    // which triggers the single redraw).
+    setPcTimbre(tracker.hasReference() ? refColor : null, tracker.hasReference() ? refWeight : null);
     updateTimbreMeters(color, weight, breath);
     drawSpectrum();
     return;
@@ -1584,13 +1605,22 @@ function updateTimbreMeters(color, weight, breath) {
 let _compassCtx = null;
 const DENS_N = 28;                 // density grid resolution
 let densGrid = null;
-let smC = null, smW = null;        // smoothed live position
+let smC = null, smW = null;        // smoothed live position (your mic)
 let homeC = null, homeW = null;    // slow "home" (characteristic) position
+let pcC = null, pcW = null;        // smoothed PC-audio position (match mode)
 
 function clearCompass() {
   densGrid = new Float32Array(DENS_N * DENS_N);
-  smC = smW = homeC = homeW = null;
+  smC = smW = homeC = homeW = pcC = pcW = null;
   drawCompass();
+}
+
+// Smoothed PC-audio timbre target; null hides the PC dot. Doesn't redraw —
+// the following mic update (updateCompass) does the single redraw.
+function setPcTimbre(color, weight) {
+  if (color == null || weight == null) { pcC = pcW = null; return; }
+  if (pcC == null) { pcC = color; pcW = weight; }
+  else { pcC += (color - pcC) * 0.30; pcW += (weight - pcW) * 0.30; }
 }
 
 function updateCompass(color, weight) {
@@ -1729,10 +1759,12 @@ function drawCompass() {
   ctx.save(); ctx.translate(x0 - 5, cy); ctx.rotate(-Math.PI / 2); ctx.fillText('dark', 0, 0); ctx.restore();
   ctx.save(); ctx.translate(x1 + 5, cy); ctx.rotate(Math.PI / 2); ctx.fillText('bright', 0, 0); ctx.restore();
 
-  // "home" marker — slow average = characteristic timbre (gold ring + crosshair)
+  // "home" marker — slow average = your characteristic timbre (ring + crosshair).
+  // Gold normally; neutral white while matching so it doesn't read as the amber
+  // PC dot.
   if (homeC != null) {
     const hx = mapX(homeC), hy = mapY(homeW);
-    ctx.strokeStyle = '#fbbf24';
+    ctx.strokeStyle = pcC != null ? 'rgba(255,255,255,0.85)' : '#fbbf24';
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(hx, hy, 9, 0, Math.PI * 2); ctx.stroke();
     ctx.beginPath();
@@ -1741,11 +1773,21 @@ function drawCompass() {
     ctx.globalAlpha = 0.5; ctx.stroke(); ctx.globalAlpha = 1;
   }
 
-  // smoothed live position — white dot with dark ring so it pops on any colour
+  // PC-audio live dot (amber, matching the PC pitch trace) — drawn under your
+  // dot so yours stays on top when they overlap.
+  if (pcC != null) {
+    const x = mapX(pcC), y = mapY(pcW);
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#fbbf24'; ctx.fill();
+    ctx.lineWidth = 2.5; ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.stroke();
+  }
+
+  // Your live position — green when matching (to pair with your green pitch
+  // trace), white otherwise; dark ring so it pops on any colour.
   if (smC != null) {
     const x = mapX(smC), y = mapY(smW);
     ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
-    ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.fillStyle = pcC != null ? '#6ee7b7' : '#fff'; ctx.fill();
     ctx.lineWidth = 2.5; ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.stroke();
   }
 }
@@ -1877,18 +1919,33 @@ function showToast(msg, kind) {
   else console.warn('[toast]', kind, msg);
 }
 
-// Persistent toast with a "Restart" action for a downloaded update.
-function showUpdateReady(version) {
+// Persistent bottom-right update reminder. One toast that evolves from
+// "available — downloading…" into "ready — Restart". Deduped by phase+version so
+// the 10-min re-checks don't stack duplicates; reappears if the user dismissed
+// it and a newer phase/version arrives.
+let _updateNotice = { el: null, key: null };
+function showUpdateNotice(version, ready) {
   const stack = document.getElementById('toastStack');
   if (!stack) return;
+  const key = (ready ? 'ready:' : 'avail:') + (version || '');
+  if (_updateNotice.el && stack.contains(_updateNotice.el) && _updateNotice.key === key) return;
+  if (_updateNotice.el) _updateNotice.el.remove();
+  const vtxt = version ? 'v' + version : '';
   const t = document.createElement('div');
   t.className = 'toast toast-ok';
-  t.innerHTML = `<span class="toast-msg">Update ${version ? 'v' + version : ''} ready.</span>
-    <button class="toast-action">Restart</button>
-    <button class="toast-dismiss" aria-label="dismiss">×</button>`;
-  t.querySelector('.toast-action').addEventListener('click', () => window.vm.installUpdate());
-  t.querySelector('.toast-dismiss').addEventListener('click', () => t.remove());
+  t.innerHTML = ready
+    ? `<span class="toast-msg">✨ Update ${vtxt} ready to install.</span>
+       <button class="toast-action">Restart now</button>
+       <button class="toast-dismiss" aria-label="dismiss">×</button>`
+    : `<span class="toast-msg">⬇️ Update ${vtxt} available — downloading…</span>
+       <button class="toast-dismiss" aria-label="dismiss">×</button>`;
+  if (ready) t.querySelector('.toast-action').addEventListener('click', () => window.vm.installUpdate());
+  t.querySelector('.toast-dismiss').addEventListener('click', () => {
+    t.remove();
+    if (_updateNotice.el === t) _updateNotice = { el: null, key: null };
+  });
   stack.appendChild(t);
+  _updateNotice = { el: t, key };
 }
 
 // ---------- RANGE PROFILE ----------
@@ -3002,10 +3059,10 @@ window.vm.onOpenSettings(() => { showSettings(); });
 window.vm.onUpdateStatus(({ status, info }) => {
   switch (status) {
     case 'available':
-      showToast(`Update v${info && info.version} found — downloading in the background…`, 'info');
+      showUpdateNotice(info && info.version, false);
       break;
     case 'downloaded':
-      showUpdateReady(info && info.version);
+      showUpdateNotice(info && info.version, true);
       break;
     case 'error':
       console.warn('[update] error', info && info.message);

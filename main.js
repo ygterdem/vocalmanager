@@ -155,14 +155,47 @@ function setupAutoUpdates() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on('checking-for-update', () => sendUpdateStatus('checking'));
-  autoUpdater.on('update-available', (info) => sendUpdateStatus('available', { version: info.version }));
+  autoUpdater.on('update-available', (info) => {
+    sendUpdateStatus('available', { version: info.version });
+    notifyUpdateAvailable(info.version);
+  });
   autoUpdater.on('update-not-available', () => sendUpdateStatus('none'));
   autoUpdater.on('download-progress', (p) => sendUpdateStatus('downloading', { percent: Math.round(p.percent) }));
-  autoUpdater.on('update-downloaded', (info) => sendUpdateStatus('downloaded', { version: info.version }));
+  autoUpdater.on('update-downloaded', (info) => {
+    sendUpdateStatus('downloaded', { version: info.version });
+    notifyUpdateReady(info.version);
+  });
   autoUpdater.on('error', (err) => sendUpdateStatus('error', { message: String((err && err.message) || err) }));
   autoUpdater.checkForUpdates().catch(() => {});
-  // Re-check every 6h for machines that leave the app running in the tray.
-  setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 6 * 60 * 60 * 1000);
+  // Re-check every 10 min for machines that leave the app running in the tray.
+  setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 10 * 60 * 1000);
+}
+
+// Native OS notification when a new version appears on GitHub. Useful when the
+// app is hidden in the tray and the in-window toast isn't visible. Deduped per
+// version+phase so the 10-min re-checks don't spam.
+let _notifiedAvail = null, _notifiedReady = null;
+function notifyUpdateAvailable(version) {
+  if (_notifiedAvail === version || !Notification.isSupported()) return;
+  _notifiedAvail = version;
+  const note = new Notification({
+    title: 'Vocal Manager — update available',
+    body: `Version ${version} found on GitHub. Downloading in the background…`,
+    silent: true
+  });
+  note.on('click', () => createMainWindow());
+  note.show();
+}
+function notifyUpdateReady(version) {
+  if (_notifiedReady === version || !Notification.isSupported()) return;
+  _notifiedReady = version;
+  const note = new Notification({
+    title: 'Vocal Manager — update ready',
+    body: `Version ${version} downloaded. Click to restart and update.`,
+    silent: false
+  });
+  note.on('click', () => { try { autoUpdater.quitAndInstall(true, true); } catch (_) { createMainWindow(); } });
+  note.show();
 }
 
 function parseHHMM(s) {
