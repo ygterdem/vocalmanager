@@ -28,6 +28,17 @@ const TICK_MS = 25;
 // Median window size — kills single-frame octave glitches.
 const MEDIAN_WINDOW = 5;
 
+// Center-pitch window. A sung note swings with vibrato (~5-6Hz, one cycle
+// ~170-200ms); averaging the raw contour over a window longer than a cycle
+// gives the *intended* pitch so a steady vibrato scores as one in-tune note
+// instead of jittering on/off target. Use the center value for scoring, the
+// responsive `freq`/`note` for the live trace.
+const CENTER_WINDOW_MS = 350;
+// Full contour ring length, also the span used to estimate vibrato.
+const CONTOUR_MS = 600;
+// Below this peak amplitude (cents) we report "no vibrato" rather than noise.
+const VIBRATO_MIN_CENTS = 10;
+
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
 
 export class PitchTracker {
@@ -42,6 +53,7 @@ export class PitchTracker {
     this.buf = null;
     this.timer = null;
     this.medianBuf = [];
+    this.contour = [];      // {t, f} ring of raw pitches → center + vibrato
     this.locked = false;
     this.noiseFloorDb = NOISE_FLOOR_REF;
     this.calibrationSamples = [];
@@ -84,6 +96,7 @@ export class PitchTracker {
     this.freqData = new Float32Array(this.analyser.frequencyBinCount);
     this.binHz = this.ctx.sampleRate / this.analyser.fftSize;
     this.medianBuf = [];
+    this.contour = [];
     this.locked = false;
     this.noiseFloorDb = NOISE_FLOOR_REF;
     this.calibrationSamples = [];
@@ -169,13 +182,19 @@ export class PitchTracker {
     }
 
     let outFreq = null;
+    let center = null;
     if (this.locked && inRange) {
       this.medianBuf.push(pitch);
       if (this.medianBuf.length > MEDIAN_WINDOW) this.medianBuf.shift();
       const sorted = this.medianBuf.slice().sort((a, b) => a - b);
       outFreq = sorted[Math.floor(sorted.length / 2)];
+      // Push the raw (un-medianed) pitch so the contour keeps full vibrato
+      // detail; center + vibrato are derived from it.
+      this.contour.push({ t: now, f: pitch });
+      center = this._analyzeContour(now);
     } else {
       this.medianBuf.length = 0;
+      this.contour.length = 0;
     }
 
     // Shift the reported dB so a NOISE_FLOOR_REF floor is consistent across
@@ -211,10 +230,18 @@ export class PitchTracker {
     }
 
     const note = outFreq ? freqToNote(outFreq) : null;
+    const centerNote = center && center.freq ? freqToNote(center.freq) : null;
     this.onUpdate({
       freq: outFreq,
       clarity,
       note,
+      // Center pitch: trimmed log-mean over ~350ms. Use this (not `note`) for
+      // on-pitch scoring so vibrato isn't penalized as being off-target.
+      centerFreq: center ? center.freq : null,
+      centerNote,
+      // Vibrato feedback — null until a steady oscillation is detected.
+      vibratoRate: center ? center.vibratoRate : null,     // Hz (cycles/sec)
+      vibratoExtent: center ? center.vibratoExtent : null, // cents (amplitude)
       refFreq,
       refNote: refFreq ? freqToNote(refFreq) : null,
       refColor: refTimbre ? refTimbre.color : null,
@@ -228,6 +255,56 @@ export class PitchTracker {
       breath: timbre ? timbre.breath : null,    // 0=clear, 1=breathy
       centroid: timbre ? timbre.centroid : null
     });
+  }
+
+  // Derive the slow "intended" pitch and vibrato from the raw contour ring.
+  // Pitch is averaged in log space (== averaging cents), which is the musically
+  // correct center of a symmetric vibrato. Returns null until there's data.
+  _analyzeContour(now) {
+    const c = this.contour;
+    // Drop samples older than the ring length.
+    const cutoff = now - CONTOUR_MS;
+    while (c.length && c[0].t < cutoff) c.shift();
+    if (!c.length) return null;
+
+    // Center pitch: trimmed log-mean over the most recent CENTER_WINDOW_MS.
+    // Trimming the extremes rejects onset scoops and the odd octave glitch.
+    const centerCutoff = now - CENTER_WINDOW_MS;
+    const recent = [];
+    for (let i = c.length - 1; i >= 0 && c[i].t >= centerCutoff; i--) {
+      recent.push(c[i].f);
+    }
+    if (!recent.length) return null;
+    recent.sort((a, b) => a - b);
+    const trim = Math.floor(recent.length * 0.2);
+    let logSum = 0, n = 0;
+    for (let i = trim; i < recent.length - trim; i++) { logSum += Math.log(recent[i]); n++; }
+    if (!n) return null;
+    const result = { freq: Math.exp(logSum / n), vibratoRate: null, vibratoExtent: null };
+
+    // Vibrato: oscillation of the contour about its log-mean, in cents. Need a
+    // span over a full cycle and enough samples to count crossings reliably.
+    const span = (c[c.length - 1].t - c[0].t) / 1000;
+    if (c.length >= 12 && span >= CENTER_WINDOW_MS / 1000) {
+      let logMean = 0;
+      for (const p of c) logMean += Math.log(p.f);
+      logMean /= c.length;
+      let min = Infinity, max = -Infinity, crossings = 0, prevSign = 0;
+      for (const p of c) {
+        const cents = 1200 * (Math.log(p.f) - logMean) / Math.LN2;
+        if (cents < min) min = cents;
+        if (cents > max) max = cents;
+        const sign = cents > 0 ? 1 : (cents < 0 ? -1 : 0);
+        if (sign && prevSign && sign !== prevSign) crossings++;
+        if (sign) prevSign = sign;
+      }
+      const extent = (max - min) / 2; // amplitude, cents
+      if (extent >= VIBRATO_MIN_CENTS) {
+        result.vibratoExtent = extent;
+        result.vibratoRate = (crossings / 2) / span; // a cycle = two crossings
+      }
+    }
+    return result;
   }
 
   _binDbAt(freq, data = this.freqData, binHz = this.binHz) {
