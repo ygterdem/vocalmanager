@@ -1,6 +1,6 @@
 {
   "name": "vocalmanager",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Background vocal-training reminder app with real-time pitch feedback, tuned for low male voices.",
   "main": "main.js",
   "scripts": {
