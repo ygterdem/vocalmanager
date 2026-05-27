@@ -631,7 +631,7 @@ export class TonePlayer {
     this.ctx.resume().then(fn).catch(fn);
   }
 
-  play(freq, durationMs = 1200) {
+  play(freq, durationMs = 1200, peak = 0.18) {
     if (!freq) return;
     this._whenRunning(() => {
       const t0 = this.ctx.currentTime;
@@ -639,8 +639,8 @@ export class TonePlayer {
 
       const master = this.ctx.createGain();
       master.gain.setValueAtTime(0, t0);
-      master.gain.linearRampToValueAtTime(0.18, t0 + 0.04);
-      master.gain.linearRampToValueAtTime(0.18, t0 + Math.max(0.05, dur - 0.1));
+      master.gain.linearRampToValueAtTime(peak, t0 + 0.04);
+      master.gain.linearRampToValueAtTime(peak, t0 + Math.max(0.05, dur - 0.1));
       master.gain.linearRampToValueAtTime(0, t0 + dur);
       master.connect(this.ctx.destination);
 

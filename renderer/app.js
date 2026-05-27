@@ -1399,18 +1399,33 @@ function loadChallenge() {
       state.runner = new ChallengeRunner(ch);
       state.runner.begin();
       el('matchIndicator').textContent = 'Sing!';
-      if (ch.type === 'scale') startMetronome(ch.perNoteMs || 700);
+      if (ch.type === 'scale') startMetronome(ch);
     } else {
       el('matchIndicator').textContent = `Starting in ${count}…`;
     }
   }, 800);
 }
 
-function startMetronome(perNoteMs) {
+function startMetronome(ch) {
   clearMetronome();
-  // Tick once on "Sing!", then every perNoteMs to cue note changes.
-  tone.tick();
-  state.metronomeTimer = setInterval(() => tone.tick(), perNoteMs);
+  const perNoteMs = (ch && ch.perNoteMs) || 700;
+  const seq = ch && ch.type === 'scale' ? ch.sequence : null;
+  // Beep the pitch of the note the user is currently trying to find, and keep
+  // beeping *that* note every beat until the runner advances (i.e. they've
+  // held it long enough). The runner's currentIdx is the live target, so we
+  // read it fresh each beat instead of marching a fixed-tempo counter through
+  // the whole scale. Falls back to a plain tick if the note can't be resolved.
+  const beepMs = Math.min(220, Math.max(120, perNoteMs * 0.35));
+  const beat = () => {
+    const idx = (state.runner && typeof state.runner.currentIdx === 'number')
+      ? state.runner.currentIdx : 0;
+    const f = seq && idx < seq.length ? noteToFreq(seq[idx]) : null;
+    if (f) tone.play(f, beepMs, 0.12);
+    else tone.tick();
+  };
+  // First beat on "Sing!", then a beep every perNoteMs.
+  beat();
+  state.metronomeTimer = setInterval(beat, perNoteMs);
 }
 
 function clearMetronome() {
@@ -1538,7 +1553,7 @@ function togglePause() {
     el('matchIndicator').className = 'match-indicator';
   } else if (state.runner.status === 'paused') {
     state.runner.resume();
-    if (state.runner.ch.type === 'scale') startMetronome(state.runner.ch.perNoteMs || 700);
+    if (state.runner.ch.type === 'scale') startMetronome(state.runner.ch);
     card.classList.remove('paused');
     btn.textContent = 'Pause';
     el('matchIndicator').textContent = 'Sing!';

@@ -95,13 +95,13 @@ export const ROUTINE = [
     tip: 'Loose lips, "brrrr". This wakes up the voice without strain.',
     challenges: [
       { type: 'hold',  target: 'C3', holdMs: 2500, toleranceCents: 80, octaveTolerance: 1,
-        label: 'Hum C3 on a lip trill', subhint: 'Steady "brrr" on the note. Octave doesn\'t matter.' },
+        label: 'Lip trill C3', subhint: 'Steady "brrr" on the note. Octave doesn\'t matter.' },
       { type: 'slide', from: 'C3', to: 'G3', checkpoints: ['C3', 'E3', 'G3'], toleranceCents: 90,
         label: 'Slide UP to G3', subhint: 'Smooth siren on "brrr" — pass through E3 in the target octave.' },
       { type: 'slide', from: 'G3', to: 'C3', checkpoints: ['G3', 'F3', 'E3', 'D3', 'C3'], toleranceCents: 90,
         label: 'Slide DOWN to C3', subhint: 'Smooth descent — every step in the target octave.' },
       { type: 'hold',  target: 'G3', holdMs: 2000, toleranceCents: 80, octaveTolerance: 1,
-        label: 'Hold G3', subhint: 'Park it on G3 for 2 seconds.' }
+        label: 'Lip trill G3', subhint: 'Park it on G3 for 2 seconds.' }
     ]
   },
   {
@@ -113,7 +113,7 @@ export const ROUTINE = [
       { type: 'slide', from: 'A2', to: 'A3', checkpoints: ['A2', 'D3', 'A3'], toleranceCents: 90,
         label: 'Octave UP slide', subhint: 'A2 → D3 → A3 in the target octave. Keep the "ng" thin on top.' },
       { type: 'hold',  target: 'A3', holdMs: 2000, toleranceCents: 80, octaveTolerance: 1,
-        label: 'Hold A3', subhint: 'Stay thin. Don\'t push.' },
+        label: 'Hold A3 on "ng"', subhint: 'Stay thin. Don\'t push.' },
       { type: 'slide', from: 'A3', to: 'A2', checkpoints: ['A3', 'G3', 'F3', 'E3', 'D3', 'C3', 'B2', 'A2'], toleranceCents: 90,
         label: 'Octave DOWN slide', subhint: 'Smooth chromatic descent in the target octave. Skipping ahead resets.' }
     ]
@@ -147,7 +147,7 @@ export const ROUTINE = [
       { type: 'hold',  target: 'C4', holdMs: 1500, toleranceCents: 60,
         label: 'Hold C4', subhint: 'Park on C4 for 1.5s — light and forward.' },
       { type: 'slide', from: 'D3', to: 'D4', checkpoints: ['D3', 'A3', 'D4'], toleranceCents: 80,
-        label: 'D3 → D4 on "wee"', subhint: 'Up a semitone from the last one.' }
+        label: 'D3 → D4 on "wee"', subhint: 'Up a whole step from the last one.' }
     ]
   },
   {
